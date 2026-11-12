@@ -51,6 +51,11 @@
     Directory to write log files to. Defaults to a "Logs" subfolder next to
     the script.
 
+.PARAMETER IncludeSystemFolders
+    Export mode: also export the top-level folders that vCenter, the
+    Supervisor and NSX manage themselves (VM: vCLS, Namespaces; Network:
+    NSX Managed Folders, Virtual Private Clouds). Skipped by default.
+
 .PARAMETER MoveObjects
     Import mode: move objects that exist in the target datacenter into their
     exported folder. If not specified, Import asks.
@@ -92,13 +97,29 @@
 
 .NOTES
     Script   : Invoke-VIFolderManager.ps1
-    Version  : 1.0.0
+    Version  : 1.1.0
     Author   : Paul van Dieen
     Blog     : https://www.hollebollevsan.nl
     Requires : VCF.PowerCLI 9.0+ (recommended) or VMware.PowerCLI 13+
-    Tested   : not yet tested against a vCenter
+    Tested   : VCF 9.1.1 and VCF 9.0.2 management vCenters (Holodeck lab,
+               2026-11-12), incl. import across the two vCenters
 
 .CHANGELOG
+    v1.1.0  2026-11-12  Paul van Dieen
+        - Lab-tested on VCF 9.1.1 and 9.0.2 (export, dry run, import with
+          moves and permissions, re-run, import into a second datacenter and
+          into a second vCenter)
+        - Export skips top-level system folders by default: VM 'vCLS' and
+          'Namespaces' (Supervisor, vSphere Pods, VKS nodes), Network 'NSX
+          Managed Folders' and 'Virtual Private Clouds'; new switch
+          -IncludeSystemFolders exports them anyway
+        - Import no longer tries to set permissions on the hidden datacenter
+          root folders - vCenter refuses that ('Operation not allowed on
+          sub-entity'); they are counted and listed in the log file
+        - Objects whose name occurs more than once in the target count as
+          already in place when one of them sits in the exported folder,
+          instead of being skipped as ambiguous
+
     v1.0.0  2026-11-12  Paul van Dieen
         - Initial release: export/import of VM, Host, Datastore and Network
           folder trees per datacenter to JSON, including folder membership
@@ -128,6 +149,9 @@ param(
     [string]$LogDirectory = '',
 
     [Parameter(Mandatory = $false)]
+    [switch]$IncludeSystemFolders,
+
+    [Parameter(Mandatory = $false)]
     [switch]$MoveObjects,
 
     [Parameter(Mandatory = $false)]
@@ -149,7 +173,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$scriptVersion = '1.0.0'
+$scriptVersion = '1.1.0'
 $scriptAuthor  = 'Paul van Dieen'
 $scriptBlogUrl = 'https://www.hollebollevsan.nl'
 $scriptDir     = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
@@ -172,6 +196,16 @@ $folderTypeMap = [ordered]@{
     Host      = @{ RootProperty = 'HostFolder';      MemberTypes = @('ClusterComputeResource', 'ComputeResource') }
     Datastore = @{ RootProperty = 'DatastoreFolder'; MemberTypes = @('Datastore', 'StoragePod') }
     Network   = @{ RootProperty = 'NetworkFolder';   MemberTypes = @('VmwareDistributedVirtualSwitch') }
+}
+
+# Top-level folders created and managed by vCenter (vCLS), the Supervisor
+# (Namespaces: vSphere Pods, VKS nodes) and NSX (segments, VPCs). Skipped on
+# export unless -IncludeSystemFolders. Names as seen on VCF 9.1.1.
+$systemFolders = @{
+    VM        = @('vCLS', 'Namespaces')
+    Host      = @()
+    Datastore = @()
+    Network   = @('NSX Managed Folders', 'Virtual Private Clouds')
 }
 
 # --- PowerCLI Module Check ----------------------------------------------------
@@ -464,9 +498,9 @@ function Get-FolderTree {
             if ($child.Type -eq 'Folder') {
                 if (-not $Index.ContainsKey($child.Value)) { continue }
                 $childName = $Index[$child.Value].Name
-                # vCLS is created and managed by vCenter itself
-                if ($SkipSystemFolders -and $Type -eq 'VM' -and $node.Path.Count -eq 0 -and $childName -eq 'vCLS') {
-                    Write-Log "Skipped system folder '/vCLS' (managed by vCenter)."
+                # Top-level folders that vCenter, the Supervisor or NSX create and manage
+                if ($SkipSystemFolders -and $node.Path.Count -eq 0 -and @($systemFolders[$Type]) -contains $childName) {
+                    Write-Log "Skipped system folder '$Type`:/$childName' and everything below it (managed by vCenter/Supervisor/NSX; use -IncludeSystemFolders to export it)."
                     continue
                 }
                 $queue.Enqueue([pscustomobject]@{ MoRef = $child; Path = @($node.Path + $childName) })
@@ -530,7 +564,7 @@ if ($Mode -eq 'Export') {
                 $typeResults = @()
                 foreach ($t in $types) {
                     $rootRef = $dcView.($folderTypeMap[$t].RootProperty)
-                    $tree    = Get-FolderTree -RootMoRef $rootRef -Index $index -Type $t -SkipSystemFolders
+                    $tree    = Get-FolderTree -RootMoRef $rootRef -Index $index -Type $t -SkipSystemFolders:(-not $IncludeSystemFolders)
 
                     # Resolve member names in one call
                     $nameById = @{}
@@ -662,7 +696,7 @@ if ($Mode -eq 'Import') {
             }
 
             if ($proceed) {
-                $stats = @{ Created = 0; Existing = 0; FolderFail = 0; Moved = 0; InPlace = 0; NotFound = 0; Ambiguous = 0; NotMovable = 0; MoveFail = 0; PermSet = 0; PermPresent = 0; PermFail = 0 }
+                $stats = @{ Created = 0; Existing = 0; FolderFail = 0; Moved = 0; InPlace = 0; NotFound = 0; Ambiguous = 0; NotMovable = 0; MoveFail = 0; PermSet = 0; PermPresent = 0; PermFail = 0; PermRoot = 0 }
 
                 $roleIdByName = @{}
                 foreach ($r in $authManager.RoleList) { $roleIdByName[$r.Name] = [int]$r.RoleId }
@@ -752,6 +786,15 @@ if ($Mode -eq 'Import') {
                             }
                             $candidates = $objIndex[$k]
                             if ($candidates.Count -gt 1) {
+                                # Same name in several folders: fine if one of them already sits in the exported folder
+                                $pathKey = Get-PathKey $path
+                                if ($pathMap.ContainsKey($pathKey) -and $pathMap[$pathKey] -isnot [string] -and $null -ne $pathMap[$pathKey]) {
+                                    $targetValue = $pathMap[$pathKey].Value
+                                    if (@($candidates | Where-Object { $null -ne $_.Parent -and $_.Parent.Value -eq $targetValue }).Count -gt 0) {
+                                        $stats.InPlace++
+                                        continue
+                                    }
+                                }
                                 $stats.Ambiguous++
                                 Write-Log "Skipped $($m.Type) '$($m.Name)': $($candidates.Count) objects with this name in the target datacenter." -Level WARNING
                                 continue
@@ -796,6 +839,14 @@ if ($Mode -eq 'Import') {
                             $perms = @($f.Permissions | Where-Object { $null -ne $_ })
                             if ($perms.Count -eq 0) { continue }
                             $path   = ConvertTo-PathArray $f.Path
+                            if ($path.Count -eq 0) {
+                                # vCenter refuses SetEntityPermissions on the hidden datacenter root
+                                # folders ("Operation not allowed on sub-entity"); these are usually
+                                # Supervisor service accounts anyway
+                                $stats.PermRoot += $perms.Count
+                                foreach ($p in $perms) { Write-Log "Skipped permission $($p.Principal) as '$($p.Role)' on the hidden $t root folder (not settable via the API)." -FileOnly }
+                                continue
+                            }
                             $target = Resolve-TargetFolder -Path $path -PathMap $pathMap
                             if ($null -eq $target) {
                                 $stats.PermFail += $perms.Count
@@ -850,7 +901,7 @@ if ($Mode -eq 'Import') {
                     if ($stats.NotFound -gt 0) { Write-Log 'Objects not found in the target are listed in the log file.' }
                 }
                 if ($ApplyPermissions) {
-                    Write-Log "Permissions: $($stats.PermSet) ${verb}set, $($stats.PermPresent) already present, $($stats.PermFail) skipped or failed."
+                    Write-Log "Permissions: $($stats.PermSet) ${verb}set, $($stats.PermPresent) already present, $($stats.PermRoot) on hidden root folders skipped (listed in the log file), $($stats.PermFail) skipped or failed."
                 }
                 if ($DryRun) { Write-Log 'Dry run: nothing was changed.' -Level WARNING }
             }

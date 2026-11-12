@@ -1,0 +1,14 @@
+# Credentials
+*.cred
+creds/
+
+# Runtime output
+Backups/
+Logs/
+*.log
+*.zip
+*.tmp
+
+# Blog post drafts (local only)
+blogpost*.html
+blogpost*.md

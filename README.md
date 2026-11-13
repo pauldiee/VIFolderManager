@@ -7,6 +7,8 @@ A PowerShell utility to export and import vCenter inventory folder structures (V
 | `Invoke-VIFolderManager.ps1` | 1.1.0 | Export / import vCenter folder trees. Lab-tested on VCF 9.1.1 and 9.0.2 |
 | `tests/New-VIFolderTestSet.ps1` | 1.0.0 | Builds, scrambles and removes a throwaway test set in a **lab** vCenter |
 
+> **Status: still in test.** VIFolderManager has been lab-tested on VCF 9.1.1 and 9.0.2 management vCenters only. It has not yet been used in a production migration, and exporting from an older source vCenter (7.x or 8.x) has not been tested. Try it in a lab first, always run an import with `-DryRun` before the real one, and check the log. Use it at your own risk; feedback and issues are welcome.
+
 ---
 
 ## How it works

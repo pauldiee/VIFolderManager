@@ -43,21 +43,36 @@
 .PARAMETER WithSecondDatacenter
     Create mode: also create the empty datacenter 'VIFM-DC2'.
 
+.PARAMETER FoldersOnly
+    Create mode: folders (and permissions) only, no dummy VMs or template, so
+    it works on a vCenter without hosts. Without -Datacenter it then takes
+    the first datacenter, with or without hosts.
+
 .PARAMETER CredentialPath
-    Saved credential file. Defaults to <vCenterServer>.cred next to the script.
+    Saved credential file. Defaults to <vCenterServer>.cred next to this
+    script, or in the repo root.
 
 .PARAMETER SkipCertificateValidation
     Skip TLS certificate validation (self-signed lab certificates).
 
 .NOTES
     Script   : New-VIFolderTestSet.ps1
-    Version  : 1.0.0
+    Version  : 1.1.0
     Author   : Paul van Dieen
     Blog     : https://www.hollebollevsan.nl
     Requires : VCF.PowerCLI 9.0+ or VMware.PowerCLI 13+
-    Tested   : VCF 9.1.1 and 9.0.2 (Holodeck lab)
+    Tested   : VCF 9.1.1 and 9.0.2 (Holodeck lab); -FoldersOnly on vCenter
+               8.0.3 without hosts (2026-11-16)
 
 .CHANGELOG
+    v1.1.0  2026-11-16  Paul van Dieen
+        - -FoldersOnly: folders and permissions without dummy VMs, for a
+          vCenter without hosts (e.g. a vCenter 8 export source)
+        - Two more folder cases: a second 'Web' under Test (same name as
+          Prod\Web) and a name with non-ASCII characters
+        - The default credential file is also looked up in the repo root,
+          where Invoke-VIFolderManager.ps1 keeps it
+
     v1.0.0  2026-11-12  Paul van Dieen
         - Initial release: Create / Scramble / Remove of a lab test set for
           Invoke-VIFolderManager.ps1
@@ -81,6 +96,9 @@ param(
     [switch]$WithSecondDatacenter,
 
     [Parameter(Mandatory = $false)]
+    [switch]$FoldersOnly,
+
+    [Parameter(Mandatory = $false)]
     [string]$CredentialPath = '',
 
     [Parameter(Mandatory = $false)]
@@ -90,7 +108,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$scriptVersion = '1.0.0'
+$scriptVersion = '1.1.0'
 $scriptAuthor  = 'Paul van Dieen'
 $scriptBlogUrl = 'https://www.hollebollevsan.nl'
 $scriptDir     = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
@@ -110,7 +128,11 @@ function Say { param([string]$Text, [string]$Color = 'Cyan') Write-Host "  $Text
 
 # --- Connect ------------------------------------------------------------------
 $safeVc = $vCenterServer -replace '[^\w\-.]', '_'
-if (-not $CredentialPath) { $CredentialPath = Join-Path $scriptDir "$safeVc.cred" }
+if (-not $CredentialPath) {
+    # Next to this script, else the repo root (where Invoke-VIFolderManager.ps1 keeps it)
+    $CredentialPath = Join-Path $scriptDir "$safeVc.cred"
+    if (-not (Test-Path $CredentialPath)) { $CredentialPath = Join-Path (Split-Path $scriptDir -Parent) "$safeVc.cred" }
+}
 if (Test-Path $CredentialPath) {
     $credential = Import-Clixml -Path $CredentialPath
 } else {
@@ -125,12 +147,14 @@ try {
     # --- Datacenter -------------------------------------------------------------
     if ($Datacenter) {
         $dc = Get-Datacenter -Server $vi -Name $Datacenter
+    } elseif ($FoldersOnly) {
+        $dc = Get-Datacenter -Server $vi | Where-Object { $_.Name -ne $dc2Name } | Select-Object -First 1
     } else {
         $dc = Get-Datacenter -Server $vi | Where-Object { $_.Name -ne $dc2Name } |
             Where-Object { @(Get-VMHost -Server $vi -Location $_ | Where-Object ConnectionState -eq 'Connected').Count -gt 0 } |
             Select-Object -First 1
     }
-    if (-not $dc) { throw 'No datacenter with a connected host found.' }
+    if (-not $dc) { throw $(if ($FoldersOnly) { 'No datacenter found.' } else { 'No datacenter with a connected host found (use -FoldersOnly on a vCenter without hosts).' }) }
     Say "Datacenter: $($dc.Name)"
 
     $roots = [ordered]@{
@@ -175,10 +199,14 @@ try {
 
     # ===========================================================================
     if ($Mode -eq 'Create') {
-        $vmHost = Get-VMHost -Server $vi -Location $dc | Where-Object ConnectionState -eq 'Connected' | Select-Object -First 1
-        $ds     = $vmHost | Get-Datastore -Server $vi | Where-Object { $_.State -eq 'Available' } | Sort-Object FreeSpaceGB -Descending | Select-Object -First 1
-        $pool   = (Get-View -Server $vi -Id $vmHost.ExtensionData.Parent -Property ResourcePool).ResourcePool
-        Say "Host: $($vmHost.Name); datastore: $($ds.Name)"
+        if (-not $FoldersOnly) {
+            $vmHost = Get-VMHost -Server $vi -Location $dc | Where-Object ConnectionState -eq 'Connected' | Select-Object -First 1
+            $ds     = $vmHost | Get-Datastore -Server $vi | Where-Object { $_.State -eq 'Available' } | Sort-Object FreeSpaceGB -Descending | Select-Object -First 1
+            $pool   = (Get-View -Server $vi -Id $vmHost.ExtensionData.Parent -Property ResourcePool).ResourcePool
+            Say "Host: $($vmHost.Name); datastore: $($ds.Name)"
+        } else {
+            Say '-FoldersOnly: no dummy VMs or template' Yellow
+        }
 
         # VM tree
         $t      = Confirm-Folder $roots.VM $rootName
@@ -190,6 +218,10 @@ try {
         $nested = Confirm-Folder $empty 'Nested'
         $null   = Confirm-Folder $nested 'Deep'
         $null   = Confirm-Folder $t 'Spaces & Specials (1)'
+        $null   = Confirm-Folder $test 'Web'   # same name as Prod\Web, other parent
+        # Non-ASCII name, built from char codes so the file encoding doesn't matter:
+        # "Caf<e-acute> <O-slash> <u-umlaut>"
+        $null   = Confirm-Folder $t ("Caf{0} {1} {2}" -f [char]0xE9, [char]0xD8, [char]0xFC)
 
         # Other trees
         foreach ($type in 'Host', 'Datastore', 'Network') {
@@ -208,7 +240,7 @@ try {
             @{ Name = 'vifm-dup01';  Folder = $prod }
             @{ Name = 'vifm-dup01';  Folder = $test }
         )
-        foreach ($p in $vmPlan) {
+        foreach ($p in $(if ($FoldersOnly) { @() } else { $vmPlan })) {
             $exists = @(Get-VM -Server $vi -Location $p.Folder -Name $p.Name -NoRecursion -ErrorAction SilentlyContinue) +
                       @(Get-Template -Server $vi -Location $p.Folder -Name $p.Name -NoRecursion -ErrorAction SilentlyContinue)
             if (@($exists | Where-Object { $null -ne $_ }).Count -gt 0) { Say "VM $($p.Name) in $($p.Folder.Name) exists" DarkGray; continue }

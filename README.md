@@ -60,6 +60,8 @@ There is deliberately **no Delete mode**: destroying a vSphere folder also destr
 | Network access | HTTPS to vCenter Server |
 | Privileges | Export: read access to the inventory and its permissions. Import: create folders, move the objects, and modify permissions |
 
+Setting up PowerShell 7 and VCF.PowerCLI on a jump host, with or without internet access, and keeping one PowerCLI version per host: [Jump Host: PowerShell 7 and VCF PowerCLI](https://vcf-planning.hollebollevsan.nl/docs/42-jump-host-powershell/).
+
 ## Usage
 
 ```powershell

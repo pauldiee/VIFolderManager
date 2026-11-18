@@ -1,4 +1,5 @@
 #Requires -Version 5.1
+
 <#
 .SYNOPSIS
     Builds, scrambles and removes a throwaway test set for testing
@@ -57,14 +58,21 @@
 
 .NOTES
     Script   : New-VIFolderTestSet.ps1
-    Version  : 1.1.0
+    Version  : 1.1.1
     Author   : Paul van Dieen
     Blog     : https://www.hollebollevsan.nl
     Requires : VCF.PowerCLI 9.0+ or VMware.PowerCLI 13+
     Tested   : VCF 9.1.1 and 9.0.2 (Holodeck lab); -FoldersOnly on vCenter
                8.0.3 without hosts (2026-11-16)
+#>
 
-.CHANGELOG
+<# CHANGELOG
+    v1.1.1  2026-11-18  Paul van Dieen
+        - Get-Help shows the full help again: the changelog moved out of the
+          help block into its own comment block (the unknown .CHANGELOG
+          keyword made Get-Help ignore the whole help block)
+        - Blank line between #Requires and the help block, for the same reason
+
     v1.1.0  2026-11-16  Paul van Dieen
         - -FoldersOnly: folders and permissions without dummy VMs, for a
           vCenter without hosts (e.g. a vCenter 8 export source)
@@ -108,7 +116,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$scriptVersion = '1.1.0'
+$scriptVersion = '1.1.1'
 $scriptAuthor  = 'Paul van Dieen'
 $scriptBlogUrl = 'https://www.hollebollevsan.nl'
 $scriptDir     = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }

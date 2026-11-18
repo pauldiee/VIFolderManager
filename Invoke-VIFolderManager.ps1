@@ -47,6 +47,26 @@
 .PARAMETER BackupDirectory
     Directory used to store exported JSON files (Export mode) or read them
     from (Import mode). Defaults to a "Backups" subfolder next to the script.
+    Without this parameter an interactive run asks for the directory after
+    the mode: Enter keeps the default, B opens the Windows folder browser,
+    or type a path. Import shows how many exports the folder holds. No
+    prompt in an unattended run (-Datacenter on Export, -ExportFile on
+    Import).
+
+.PARAMETER Datacenter
+    Export mode: one or more datacenter names or wildcards to export,
+    instead of the datacenter picker. Import mode: the exact name of the
+    datacenter to import into, instead of the picker. An unknown name stops
+    the script with the list of datacenters.
+
+.PARAMETER ExportFile
+    Import mode: the export file to import (a name or wildcard, with or
+    without .json) instead of the file picker. When a wildcard matches
+    several files, the newest is used and logged. Together with -Datacenter,
+    -FolderType, -MoveObjects and -ApplyPermissions (use -MoveObjects:$false
+    to say no) an Import runs unattended, without the Proceed question
+    (saved credential required); without console input every prompt stops
+    the script with a clear message and exit code 2.
 
 .PARAMETER LogDirectory
     Directory to write log files to. Defaults to a "Logs" subfolder next to
@@ -96,9 +116,21 @@
     # Recreate only the folders, no moves, no permissions
     .\Invoke-VIFolderManager.ps1 -vCenterServer vc02.lab.local -Mode Import -MoveObjects:$false -ApplyPermissions:$false
 
+.EXAMPLE
+    # Interactive: after the mode, press B to pick the backup folder in a dialog
+    .\Invoke-VIFolderManager.ps1 -vCenterServer vc02.lab.local -Mode Import
+
+.EXAMPLE
+    # Unattended export of every datacenter whose name starts with DC
+    .\Invoke-VIFolderManager.ps1 -vCenterServer vc01.lab.local -Mode Export -Datacenter 'DC*' -FolderType VM,Host,Datastore,Network
+
+.EXAMPLE
+    # Unattended import after a migration wave: newest export of DC01, move VMs, no permissions
+    .\Invoke-VIFolderManager.ps1 -vCenterServer vc02.lab.local -Mode Import -ExportFile 'Folders_DC01_*' -Datacenter DC01 -FolderType VM -MoveObjects -ApplyPermissions:$false
+
 .NOTES
     Script   : Invoke-VIFolderManager.ps1
-    Version  : 1.2.1
+    Version  : 1.3.0
     Author   : Paul van Dieen
     Blog     : https://www.hollebollevsan.nl
     Requires : PowerShell 7.4+, VCF.PowerCLI 9.0+ (or VMware.PowerCLI 13+)
@@ -107,6 +139,35 @@
 #>
 
 <# CHANGELOG
+    v1.3.0  2026-11-18  Paul van Dieen
+        - On par with VDSPortGroupManager 1.6.1 (#10)
+        - Pick the backup directory interactively: without -BackupDirectory,
+          Export and Import ask for it after the mode. Enter keeps the
+          default Backups folder, B opens the Windows folder browser (only
+          where a GUI is available), or type a path. Import shows how many
+          exports the folder holds and asks again when it holds none.
+        - Failures stand out: a datacenter that fails to export, a folder
+          that can't be created, an object that can't be moved and a
+          permission that can't be set are logged as an ERROR (red)
+          starting with FAILED, with the vCenter message without the
+          PowerShell wrapper. Summaries are red with failures, yellow with
+          only skips, green otherwise, and list every failure. A run with
+          failures ends with exit code 1 (was always 0).
+        - A permission whose role doesn't exist on the target is a skip
+          (yellow), counted apart from permissions that failed
+        - New -Datacenter (Export: names or wildcards; Import: the target)
+          and -ExportFile (Import: name or wildcard, newest match wins), so
+          Export and Import can run unattended; a fully parameterised
+          Import skips the Proceed question
+        - Without console input (scheduled task, CI, -NonInteractive) every
+          prompt stops with a clear message naming the parameters and exit
+          code 2, instead of an error
+        - Picker: filter by name (a wildcard such as *DC01*, or /text for a
+          substring), renumbered; 'all' takes what the filter shows,
+          'reset' clears it, 'list' shows everything; above 50 items it asks
+          for a filter instead of printing the whole list; cancel also with
+          exit, quit or q
+
     v1.2.1  2026-11-18  Paul van Dieen
         - Get-Help shows the full help again: the changelog moved out of the
           help block into its own comment block (the unknown .CHANGELOG
@@ -168,6 +229,12 @@ param(
     [string]$LogDirectory = '',
 
     [Parameter(Mandatory = $false)]
+    [string[]]$Datacenter = @(),
+
+    [Parameter(Mandatory = $false)]
+    [string]$ExportFile = '',
+
+    [Parameter(Mandatory = $false)]
     [switch]$IncludeSystemFolders,
 
     [Parameter(Mandatory = $false)]
@@ -192,7 +259,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$scriptVersion = '1.2.1'
+$scriptVersion = '1.3.0'
 $scriptAuthor  = 'Paul van Dieen'
 $scriptBlogUrl = 'https://www.hollebollevsan.nl'
 $scriptDir     = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
@@ -207,6 +274,10 @@ Write-Host ('=' * 62) -ForegroundColor DarkCyan
 # --- Defaults -----------------------------------------------------------------
 if (-not $BackupDirectory) { $BackupDirectory = Join-Path $scriptDir 'Backups' }
 if (-not $LogDirectory)    { $LogDirectory    = Join-Path $scriptDir 'Logs' }
+
+if ($ExportFile -and $Mode -and $Mode -ne 'Import') {
+    Write-Host '  [WARN] -ExportFile is only applied in Import mode and will be ignored.' -ForegroundColor Yellow
+}
 
 # Folder type -> datacenter root folder property and the object types that can
 # live in that tree (and that this script records and moves)
@@ -311,32 +382,194 @@ function Write-Log {
     }
 }
 
+# --- Run results (#10, as VDSPortGroupManager #20) --------------------------------
+# Every datacenter, folder, object or permission that fails is logged as an
+# ERROR (red) and collected, so the summary names them with the reason and the
+# run ends with exit code 1 (0 = no failures, 2 = stopped for lack of console
+# input).
+$script:RunFailures = [System.Collections.Generic.List[object]]::new()
+
+function Get-FailReason {
+    # The vCenter message without PowerShell's wrapper: 'Exception calling
+    # "CreateDVPortgroup" with "1" argument(s): "..."', or PowerCLI's
+    # tab-separated 'timestamp<TAB>cmdlet<TAB>detail'.
+    param($ErrorRecord)
+    $m = if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { "$($ErrorRecord.Exception.Message)" } else { "$ErrorRecord" }
+    if ($m -match "`t") { $m = @($m -split "`t" | Where-Object { $_.Trim() })[-1].Trim() }
+    if ($m -match '^Exception calling "[^"]+" with "\d+" argument\(s\): "(.*)"$') { $m = $Matches[1] }
+    return $m.Trim()
+}
+
+function Add-RunFailure {
+    param([string]$Action, [string]$Name, [string]$Reason)
+    $script:RunFailures.Add([pscustomobject]@{ Action = $Action; Name = $Name; Reason = $Reason })
+    Write-Log "FAILED $($Action.ToLower()) '$Name': $Reason" -Level ERROR
+}
+
+function Write-RunSummary {
+    # One summary line, coloured by outcome, then the failures of these actions.
+    param([string]$Line, [int]$Failed, [int]$Skipped = 0, [string[]]$Actions = @())
+    $level = if ($Failed -gt 0) { 'ERROR' } elseif ($Skipped -gt 0) { 'WARNING' } else { 'SUCCESS' }
+    Write-Log $Line -Level $level
+    $mine = @($script:RunFailures | Where-Object { $Actions -contains $_.Action })
+    if ($mine.Count -gt 0) {
+        Write-Log "  Failed ($($mine.Count)):" -Level ERROR
+        foreach ($f in $mine) { Write-Log "    - $($f.Name): $($f.Reason)" -Level ERROR }
+    }
+}
+
 # --- Menu Functions -------------------------------------------------------------
+# Long lists: above $PickerListMax items the picker shows a count and a few
+# examples and asks for a filter first; above $PickerEchoMax selected items
+# the confirmation shows the count plus the first and last few (#4).
+$PickerListMax = 50
+$PickerEchoMax = 20
+
+# Words that abort a picker or prompt (#13); -in is case-insensitive.
+$CancelWords = @('cancel', 'exit', 'quit', 'q')
+function Test-CancelInput {
+    param([string]$Text)
+    return ($Text -in $CancelWords)
+}
+
+# Every prompt goes through Read-Input (#11): without console input (a
+# scheduled task, CI, pwsh -NonInteractive, redirected stdin) Read-Host
+# throws or returns $null; stop with a clear message instead of a
+# null-valued-expression error.
+function Stop-NoConsoleInput {
+    param([string]$Prompt)
+    Write-Host "`n  [ERROR] No console input available (unattended run?). The script asked: $($Prompt.Trim())" -ForegroundColor Red
+    Write-Host '  Pass the choices as parameters instead: -Mode, -Datacenter and -FolderType, plus' -ForegroundColor Yellow
+    Write-Host '  -ExportFile, -MoveObjects and -ApplyPermissions for Import (-MoveObjects:$false to' -ForegroundColor Yellow
+    Write-Host '  say no). Save the credential first with one interactive run.' -ForegroundColor Yellow
+    $conn = Get-Variable -Name viConn -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    if ($conn) { Disconnect-VIServer -Server $conn -Confirm:$false -ErrorAction SilentlyContinue }
+    exit 2
+}
+
+function Read-Input {
+    param([string]$Prompt, [switch]$AsSecureString)
+    try {
+        $value = if ($AsSecureString) { Read-Host $Prompt -AsSecureString } else { Read-Host $Prompt }
+    }
+    catch {
+        $value = $null
+    }
+    if ($null -eq $value) { Stop-NoConsoleInput -Prompt $Prompt }
+    if ($AsSecureString) { return $value }
+    return $value.Trim()
+}
+
+function Write-ItemList {
+    param([array]$Items, [string]$DisplayProperty, [switch]$Full)
+    $width = "$($Items.Count)".Length
+    $fmt   = '  [{0,' + $width + '}]  {1}'
+    if ($Full -or $Items.Count -le $PickerListMax) {
+        for ($i = 0; $i -lt $Items.Count; $i++) { Write-Host ($fmt -f ($i + 1), $Items[$i].$DisplayProperty) }
+        return
+    }
+    for ($i = 0; $i -lt 5; $i++) { Write-Host ($fmt -f ($i + 1), $Items[$i].$DisplayProperty) }
+    Write-Host ('  ' + (' ' * ($width + 2)) + "  ... $($Items.Count - 10) more ...") -ForegroundColor DarkGray
+    for ($i = $Items.Count - 5; $i -lt $Items.Count; $i++) { Write-Host ($fmt -f ($i + 1), $Items[$i].$DisplayProperty) }
+    Write-Host "`n  $($Items.Count) items: too many to list. Narrow the list with a filter, or type 'list' to show them all." -ForegroundColor Yellow
+}
+
+function Write-SelectionSummary {
+    param([array]$Selected, [string]$DisplayProperty)
+    Write-Host "`n  Selected $($Selected.Count) item(s):" -ForegroundColor Green
+    if ($Selected.Count -le $PickerEchoMax) {
+        $Selected | ForEach-Object { Write-Host "    - $($_.$DisplayProperty)" -ForegroundColor White }
+    }
+    else {
+        $Selected[0..4] | ForEach-Object { Write-Host "    - $($_.$DisplayProperty)" -ForegroundColor White }
+        Write-Host "    ... $($Selected.Count - 10) more ..." -ForegroundColor DarkGray
+        $Selected[($Selected.Count - 5)..($Selected.Count - 1)] | ForEach-Object { Write-Host "    - $($_.$DisplayProperty)" -ForegroundColor White }
+    }
+    Write-Host ''
+}
+
+function Select-ItemsByName {
+    # Non-interactive selection (-Datacenter): every item
+    # whose name matches one of the patterns (names or wildcards, -like).
+    param(
+        [Parameter(Mandatory = $true)][array]$Items,
+        [Parameter(Mandatory = $true)][string]$NameProperty,
+        [Parameter(Mandatory = $true)][string]$DisplayProperty,
+        [Parameter(Mandatory = $true)][string[]]$Patterns,
+        [string]$What = 'item'
+    )
+    $selected = [System.Collections.Generic.List[object]]::new()
+    foreach ($pattern in $Patterns) {
+        $hits = @($Items | Where-Object { $_.$NameProperty -like $pattern })
+        if ($hits.Count -eq 0) {
+            Write-Log "No $What matches '$pattern'." -Level WARNING
+        }
+        foreach ($hit in $hits) { if (-not $selected.Contains($hit)) { $selected.Add($hit) } }
+    }
+    if ($selected.Count -gt 0) {
+        Write-Log "Selected $($selected.Count) $What(s) by name: $($Patterns -join ', ')"
+        Write-SelectionSummary -Selected @($selected) -DisplayProperty $DisplayProperty
+    }
+    return @($selected)
+}
+
 function Select-MultipleItems {
     param(
         [Parameter(Mandatory = $true)][array]$Items,
         [Parameter(Mandatory = $true)][string]$DisplayProperty,
-        [Parameter(Mandatory = $true)][string]$Title
+        [Parameter(Mandatory = $true)][string]$Title,
+        # Property the filter matches on (defaults to the display text)
+        [string]$NameProperty = ''
     )
     if ($Items.Count -eq 0) {
         Write-Host '  No items available to select.' -ForegroundColor Yellow
         return @()
     }
+    if (-not $NameProperty) { $NameProperty = $DisplayProperty }
+    $view   = $Items
+    $filter = ''
     Write-Host "`n  $Title" -ForegroundColor Cyan
-    for ($i = 0; $i -lt $Items.Count; $i++) {
-        Write-Host ('  [{0,3}]  {1}' -f ($i + 1), $Items[$i].$DisplayProperty)
-    }
+    Write-ItemList -Items $view -DisplayProperty $DisplayProperty
     Write-Host "`n  Enter numbers (e.g. 1,3,5), a range (e.g. 2-6), a combination (e.g. 1,3-5,8)," -ForegroundColor Gray
-    Write-Host "  'all' to select everything, or 'cancel' to abort.`n" -ForegroundColor Gray
+    Write-Host "  'all' to select every item shown, or 'cancel' (or exit, quit, q) to abort." -ForegroundColor Gray
+    Write-Host "  Filter by name: a wildcard (e.g. *DC01*) or /text for a substring; 'reset' clears" -ForegroundColor Gray
+    Write-Host "  the filter, 'list' shows every item in the current list.`n" -ForegroundColor Gray
     while ($true) {
-        $userInput = (Read-Host '  Your selection').Trim()
-        if ($userInput -eq 'cancel') {
+        $prompt    = if ($filter) { "  Your selection (filter: $filter, $($view.Count) shown)" } else { '  Your selection' }
+        $userInput = Read-Input $prompt
+        if (Test-CancelInput $userInput) {
             Write-Host '  Cancelled.' -ForegroundColor Yellow
             return @()
         }
+        if ($userInput -eq 'list') {
+            Write-ItemList -Items $view -DisplayProperty $DisplayProperty -Full
+            continue
+        }
+        if ($userInput -eq 'reset' -or ($userInput -eq '' -and $filter)) {
+            $view = $Items; $filter = ''
+            Write-Host "`n  Filter cleared: $($view.Count) item(s)." -ForegroundColor Cyan
+            Write-ItemList -Items $view -DisplayProperty $DisplayProperty
+            continue
+        }
+        if ($userInput -match '[*?]' -or $userInput.StartsWith('/')) {
+            $pattern = if ($userInput.StartsWith('/')) { '*' + [WildcardPattern]::Escape($userInput.Substring(1)) + '*' } else { $userInput }
+            $hits    = @($Items | Where-Object { $_.$NameProperty -like $pattern })
+            if ($hits.Count -eq 0) {
+                Write-Host "  Nothing matches '$userInput'; the list is unchanged." -ForegroundColor Yellow
+                continue
+            }
+            $view = $hits; $filter = $userInput
+            Write-Host "`n  Filter '$filter': $($view.Count) of $($Items.Count) item(s), renumbered." -ForegroundColor Cyan
+            Write-ItemList -Items $view -DisplayProperty $DisplayProperty
+            continue
+        }
+        if ($userInput -eq '') { continue }
         if ($userInput -eq 'all') {
-            Write-Host "  Selected all $($Items.Count) item(s)." -ForegroundColor Green
-            return $Items
+            if ($view.Count -gt $PickerListMax -and -not $filter) {
+                Write-Host "  'all' selects all $($view.Count) item(s)." -ForegroundColor Yellow
+            }
+            Write-SelectionSummary -Selected $view -DisplayProperty $DisplayProperty
+            return $view
         }
         $selectedIndices = @()
         $parts           = $userInput -split ','
@@ -357,56 +590,87 @@ function Select-MultipleItems {
                 $selectedIndices += $start..$end
             }
             else {
-                Write-Host "  Unrecognised input: '$part'. Use numbers, ranges like 2-5, or 'all'." -ForegroundColor Red
+                Write-Host "  Unrecognised input: '$part'. Use numbers, ranges like 2-5, 'all', or a filter (*text* or /text)." -ForegroundColor Red
                 $parseError = $true
                 break
             }
         }
         if ($parseError) { continue }
         $selectedIndices = $selectedIndices | Sort-Object -Unique
-        $invalid         = $selectedIndices | Where-Object { $_ -lt 1 -or $_ -gt $Items.Count }
+        $invalid         = $selectedIndices | Where-Object { $_ -lt 1 -or $_ -gt $view.Count }
         if ($invalid) {
-            Write-Host "  Out-of-range: $($invalid -join ', '). Valid range is 1-$($Items.Count)." -ForegroundColor Red
+            Write-Host "  Out-of-range: $($invalid -join ', '). Valid range is 1-$($view.Count)." -ForegroundColor Red
             continue
         }
-        $selected = @($selectedIndices | ForEach-Object { $Items[$_ - 1] })
-        Write-Host "`n  Selected $($selected.Count) item(s):" -ForegroundColor Green
-        $selected | ForEach-Object { Write-Host "    - $($_.$DisplayProperty)" -ForegroundColor White }
-        Write-Host ''
+        $selected = @($selectedIndices | ForEach-Object { $view[$_ - 1] })
+        Write-SelectionSummary -Selected $selected -DisplayProperty $DisplayProperty
         return $selected
     }
 }
 
 function Select-SingleItem {
+    # One item. With -Filter the list can be narrowed like the multi picker
+    # (wildcard or /text, 'reset', 'list'); used for the export file list,
+    # which grows with every export (#10).
     param(
         [Parameter(Mandatory = $true)][array]$Items,
         [Parameter(Mandatory = $true)][string]$DisplayProperty,
-        [Parameter(Mandatory = $true)][string]$Title
+        [Parameter(Mandatory = $true)][string]$Title,
+        [switch]$Filter
     )
     if ($Items.Count -eq 0) {
         Write-Host '  No items available to select.' -ForegroundColor Yellow
         return $null
     }
+    $view = $Items
+    $flt  = ''
     Write-Host "`n  $Title" -ForegroundColor Cyan
-    for ($i = 0; $i -lt $Items.Count; $i++) {
-        Write-Host ('  [{0,3}]  {1}' -f ($i + 1), $Items[$i].$DisplayProperty)
+    if ($Filter) { Write-ItemList -Items $view -DisplayProperty $DisplayProperty }
+    else { Write-ItemList -Items $view -DisplayProperty $DisplayProperty -Full }
+    Write-Host "`n  Enter a number to select one item, or 'cancel' (or exit, quit, q) to abort." -ForegroundColor Gray
+    if ($Filter) {
+        Write-Host "  Filter by name: a wildcard (e.g. *DC01*) or /text for a substring; 'reset' clears" -ForegroundColor Gray
+        Write-Host "  the filter, 'list' shows every item in the current list." -ForegroundColor Gray
     }
-    Write-Host "`n  Enter a number to select one item, or 'cancel' to abort.`n" -ForegroundColor Gray
+    Write-Host ''
     while ($true) {
-        $userInput = (Read-Host '  Your selection').Trim()
-        if ($userInput -eq 'cancel') {
+        $prompt    = if ($flt) { "  Your selection (filter: $flt, $($view.Count) shown)" } else { '  Your selection' }
+        $userInput = Read-Input $prompt
+        if (Test-CancelInput $userInput) {
             Write-Host '  Cancelled.' -ForegroundColor Yellow
             return $null
         }
+        if ($Filter -and $userInput -eq 'list') {
+            Write-ItemList -Items $view -DisplayProperty $DisplayProperty -Full
+            continue
+        }
+        if ($Filter -and ($userInput -eq 'reset' -or ($userInput -eq '' -and $flt))) {
+            $view = $Items; $flt = ''
+            Write-Host "`n  Filter cleared: $($view.Count) item(s)." -ForegroundColor Cyan
+            Write-ItemList -Items $view -DisplayProperty $DisplayProperty
+            continue
+        }
+        if ($Filter -and ($userInput -match '[*?]' -or $userInput.StartsWith('/'))) {
+            $pattern = if ($userInput.StartsWith('/')) { '*' + [WildcardPattern]::Escape($userInput.Substring(1)) + '*' } else { $userInput }
+            $hits    = @($Items | Where-Object { $_.$DisplayProperty -like $pattern })
+            if ($hits.Count -eq 0) {
+                Write-Host "  Nothing matches '$userInput'; the list is unchanged." -ForegroundColor Yellow
+                continue
+            }
+            $view = $hits; $flt = $userInput
+            Write-Host "`n  Filter '$flt': $($view.Count) of $($Items.Count) item(s), renumbered." -ForegroundColor Cyan
+            Write-ItemList -Items $view -DisplayProperty $DisplayProperty
+            continue
+        }
         if ($userInput -match '^\d+$') {
             $index = [int]$userInput
-            if ($index -ge 1 -and $index -le $Items.Count) {
-                $selected = $Items[$index - 1]
+            if ($index -ge 1 -and $index -le $view.Count) {
+                $selected = $view[$index - 1]
                 Write-Host "`n  Selected: $($selected.$DisplayProperty)`n" -ForegroundColor Green
                 return $selected
             }
         }
-        Write-Host "  Invalid selection. Enter a number between 1 and $($Items.Count)." -ForegroundColor Red
+        Write-Host "  Invalid selection. Enter a number between 1 and $($view.Count)." -ForegroundColor Red
     }
 }
 
@@ -431,6 +695,99 @@ if (-not $Mode) {
     $Mode = $modeChoice.Value
 }
 
+# --- Backup Directory (#10, as VDSPortGroupManager #18) ---------------------------
+# Interactive runs ask where the exports are (Import) or go (Export): Enter
+# keeps the default, B opens the Windows folder browser, or type a path. No
+# prompt when -BackupDirectory is given, or when the run is unattended
+# (-Datacenter for Export, -ExportFile for Import).
+function Test-FolderDialogAvailable {
+    if (-not $IsWindows) { return $false }
+    if (-not [Environment]::UserInteractive) { return $false }
+    if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') { return $false }
+    try { Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop; return $true }
+    catch { return $false }
+}
+
+function Select-FolderDialog {
+    param([string]$Description, [string]$StartPath)
+    $dialog = [System.Windows.Forms.FolderBrowserDialog]::new()
+    $dialog.Description = $Description
+    $dialog.UseDescriptionForTitle = $true
+    $dialog.ShowNewFolderButton = $true
+    if ($StartPath -and (Test-Path -Path $StartPath -PathType Container)) { $dialog.SelectedPath = (Resolve-Path $StartPath).Path }
+    # A hidden top-most owner keeps the dialog in front of the console window.
+    $owner = [System.Windows.Forms.Form]::new()
+    $owner.TopMost = $true
+    $owner.ShowInTaskbar = $false
+    $owner.WindowState = 'Minimized'
+    try {
+        if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) { return $dialog.SelectedPath }
+        return $null
+    }
+    finally {
+        $dialog.Dispose()
+        $owner.Dispose()
+    }
+}
+
+function Get-BackupCount {
+    param([string]$Path)
+    return @(Get-ChildItem -Path $Path -Filter '*.json' -File -ErrorAction SilentlyContinue).Count
+}
+
+$askBackupDir = -not $PSBoundParameters.ContainsKey('BackupDirectory') -and (
+    ($Mode -eq 'Export' -and $Datacenter.Count -eq 0) -or
+    ($Mode -eq 'Import' -and -not $ExportFile))
+
+if ($askBackupDir) {
+    $canBrowse = Test-FolderDialogAvailable
+    $purpose   = if ($Mode -eq 'Import') { 'to import from' } else { 'to export to' }
+    while ($true) {
+        Write-Host "`n  Backup directory ${purpose}:" -ForegroundColor Cyan
+        Write-Host "    $BackupDirectory"
+        if ($Mode -eq 'Import' -and (Test-Path -Path $BackupDirectory -PathType Container)) {
+            Write-Host "    ($(Get-BackupCount $BackupDirectory) export(s) here)" -ForegroundColor DarkGray
+        }
+        $hint = if ($canBrowse) { "  [Enter] use it, [B] browse, or type a path ('q' to quit)" } else { "  [Enter] use it, or type a path ('q' to quit)" }
+        $answer = Read-Input $hint
+        if (Test-CancelInput $answer) {
+            Write-Host '  Cancelled.' -ForegroundColor Yellow
+            exit 0
+        }
+
+        $candidate = $BackupDirectory
+        if ($canBrowse -and $answer -match '^[Bb]$') {
+            $desc = if ($Mode -eq 'Import') { 'Select the folder with the folder exports (.json)' } else { 'Select the folder for the folder exports' }
+            $picked = Select-FolderDialog -Description $desc -StartPath $BackupDirectory
+            if (-not $picked) { Write-Host '  No folder chosen.' -ForegroundColor Yellow; continue }
+            $candidate = $picked
+        }
+        elseif ($answer) {
+            $candidate = $answer.Trim('"', "'")
+        }
+
+        if ($Mode -eq 'Import') {
+            if (-not (Test-Path -Path $candidate -PathType Container)) {
+                Write-Host "  Folder not found: $candidate" -ForegroundColor Red
+                continue
+            }
+            $count = Get-BackupCount $candidate
+            if ($count -eq 0) {
+                Write-Host "  No exports (.json) in $candidate. Choose another folder." -ForegroundColor Red
+                $BackupDirectory = $candidate
+                continue
+            }
+            Write-Host "  [OK]   $count export(s) in $candidate." -ForegroundColor Green
+        }
+        elseif (Test-Path -Path $candidate -PathType Leaf) {
+            Write-Host "  That is a file, not a folder: $candidate" -ForegroundColor Red
+            continue
+        }
+        $BackupDirectory = $candidate
+        break
+    }
+}
+
 if ($Mode -ne 'Import' -and ($DryRun -or $PSBoundParameters.ContainsKey('MoveObjects') -or $PSBoundParameters.ContainsKey('ApplyPermissions'))) {
     Write-Host '  [WARN] -MoveObjects, -ApplyPermissions and -DryRun only apply in Import mode and will be ignored.' -ForegroundColor Yellow
 }
@@ -445,8 +802,8 @@ if ($ResetCredentials -or -not (Test-Path $CredentialPath)) {
     } else {
         Write-Host '  [INFO] No saved credentials found - prompting.' -ForegroundColor Cyan
     }
-    $credUser   = Read-Host "  Username for $vCenterServer"
-    $credPass   = Read-Host '  Password' -AsSecureString
+    $credUser   = Read-Input "  Username for $vCenterServer"
+    $credPass   = Read-Input '  Password' -AsSecureString
     $credential = [System.Management.Automation.PSCredential]::new($credUser, $credPass)
     $credential | Export-Clixml -Path $CredentialPath
     Write-Host "  [OK]   Credentials saved to $CredentialPath." -ForegroundColor Green
@@ -508,6 +865,14 @@ function Format-Path {
 function Get-DatacenterViews {
     return @(Get-View -Server $viConn -ViewType Datacenter -Property Name, VmFolder, HostFolder, DatastoreFolder, NetworkFolder |
         Sort-Object Name)
+}
+
+function Stop-UnknownDatacenter {
+    # -Datacenter matched nothing: stop with the list, like -VDSwitchName in VDSPortGroupManager
+    param([string]$Name, [array]$Views)
+    Write-Log "Datacenter '$Name' not found on $vCenterServer. Datacenters: $(@($Views | ForEach-Object { $_.Name }) -join ', ')" -Level ERROR
+    Disconnect-VIServer -Server $viConn -Confirm:$false
+    exit 1
 }
 
 function Get-FolderIndex {
@@ -593,9 +958,18 @@ function Get-FolderPermissions {
 # =============================================================================
 if ($Mode -eq 'Export') {
     Write-Log '--- EXPORT MODE ---'
-    $dcItems = @(Get-DatacenterViews | ForEach-Object { [pscustomobject]@{ Label = $_.Name; Item = $_ } })
-    $dcChoices = Select-MultipleItems -Items $dcItems -DisplayProperty 'Label' -Title 'Select datacenter(s) to EXPORT'
+    $dcViews = @(Get-DatacenterViews)
+    $dcItems = @($dcViews | ForEach-Object { [pscustomobject]@{ Label = $_.Name; Name = $_.Name; Item = $_ } })
+    $dcChoices = if ($Datacenter.Count -gt 0) {
+        Select-ItemsByName -Items $dcItems -NameProperty 'Name' -DisplayProperty 'Label' -Patterns $Datacenter -What 'datacenter'
+    } else {
+        Select-MultipleItems -Items $dcItems -DisplayProperty 'Label' -Title 'Select datacenter(s) to EXPORT'
+    }
+    if ($Datacenter.Count -gt 0 -and @($dcChoices).Count -eq 0) {
+        Stop-UnknownDatacenter -Name ($Datacenter -join ', ') -Views $dcViews
+    }
     $types = if ($FolderType.Count -gt 0) { $FolderType } else { Select-FolderTypes }
+    $exportOk = 0
 
     if (@($dcChoices).Count -eq 0 -or @($types).Count -eq 0) {
         Write-Log 'No datacenter or folder type selected. Skipping export.' -Level WARNING
@@ -662,11 +1036,14 @@ if ($Mode -eq 'Export') {
                 $jsonPath = Join-Path $BackupDirectory "Folders_${safeDc}_$timestamp.json"
                 ConvertTo-Json -InputObject $export -Depth 10 | Set-Content -Path $jsonPath -Encoding UTF8
                 Write-Log "Exported: $jsonPath" -Level SUCCESS
+                $exportOk++
             }
             catch {
-                Write-Log "Could not export datacenter '$($dcView.Name)': $(Get-ErrorDetail $_)" -Level ERROR
+                Add-RunFailure -Action 'Export' -Name $dcView.Name -Reason (Get-FailReason $_)
             }
         }
+        $exportFail = @($script:RunFailures | Where-Object { $_.Action -eq 'Export' }).Count
+        Write-RunSummary -Line "Export complete: $exportOk datacenter(s) exported, $exportFail failed." -Failed $exportFail -Actions 'Export'
     }
 }
 
@@ -680,13 +1057,29 @@ if ($Mode -eq 'Import') {
         Disconnect-VIServer -Server $viConn -Confirm:$false
         exit 1
     }
-    $allJson = @(Get-ChildItem -Path $BackupDirectory -Filter '*.json' | Sort-Object Name)
+    $allJson = @(Get-ChildItem -Path $BackupDirectory -Filter '*.json' -File | Sort-Object Name)
     $fileChoice = $null
-    if ($allJson.Count -eq 0) {
+    if ($ExportFile) {
+        # Unattended: a name or wildcard, with or without .json; the newest match wins
+        $pattern = if ($ExportFile -like '*.json') { $ExportFile } else { "$ExportFile.json" }
+        $hits = @($allJson | Where-Object { $_.Name -like $pattern } | Sort-Object LastWriteTime -Descending)
+        if ($hits.Count -eq 0) {
+            Write-Log "No export matches '$ExportFile' in '$BackupDirectory'." -Level ERROR
+            Disconnect-VIServer -Server $viConn -Confirm:$false
+            exit 1
+        }
+        $fileChoice = $hits[0]
+        if ($hits.Count -gt 1) {
+            Write-Log "'$ExportFile' matches $($hits.Count) exports; using the newest: $($fileChoice.Name)" -Level WARNING
+        }
+    }
+    elseif ($allJson.Count -eq 0) {
         Write-Log "No .json files found in '$BackupDirectory'. Nothing to import." -Level WARNING
     }
     else {
-        $fileChoice = Select-SingleItem -Items $allJson -DisplayProperty 'Name' -Title 'Select folder export to IMPORT'
+        $fileItems  = @($allJson | ForEach-Object { [pscustomobject]@{ Label = $_.Name; Name = $_.Name; Item = $_ } })
+        $fileChoice = Select-SingleItem -Items $fileItems -DisplayProperty 'Label' -Title 'Select folder export to IMPORT' -Filter
+        if ($fileChoice) { $fileChoice = $fileChoice.Item }
     }
 
     $data = $null
@@ -694,11 +1087,11 @@ if ($Mode -eq 'Import') {
         try {
             $data = Get-Content -Path $fileChoice.FullName -Raw | ConvertFrom-Json
             if (-not ($data.PSObject.Properties.Name -contains 'Tool') -or $data.Tool -ne 'VIFolderManager') {
-                Write-Log "'$($fileChoice.Name)' is not a VIFolderManager export." -Level ERROR
+                Add-RunFailure -Action 'Read' -Name $fileChoice.Name -Reason 'not a VIFolderManager export'
                 $data = $null
             }
         } catch {
-            Write-Log "Could not read '$($fileChoice.Name)': $($_.Exception.Message)" -Level ERROR
+            Add-RunFailure -Action 'Read' -Name $fileChoice.Name -Reason $_.Exception.Message
             $data = $null
         }
     }
@@ -707,11 +1100,18 @@ if ($Mode -eq 'Import') {
         Write-Log "Export file: $($fileChoice.Name) (datacenter '$($data.Datacenter)' on $($data.SourceVCenter), exported $($data.ExportedAt))"
 
         # Target datacenter
-        $dcItems = @(Get-DatacenterViews | ForEach-Object {
+        $dcViews = @(Get-DatacenterViews)
+        $dcItems = @($dcViews | ForEach-Object {
             $mark = if ($_.Name -eq $data.Datacenter) { '  [same name as export]' } else { '' }
             [pscustomobject]@{ Label = "$($_.Name)$mark"; Item = $_ }
         })
-        $dcChoice = Select-SingleItem -Items $dcItems -DisplayProperty 'Label' -Title 'Select datacenter to IMPORT into'
+        if ($Datacenter.Count -gt 0) {
+            if ($Datacenter.Count -gt 1) { Write-Log "Import goes into one datacenter; using '$($Datacenter[0])'." -Level WARNING }
+            $dcChoice = @($dcItems | Where-Object { $_.Item.Name -eq $Datacenter[0] })[0]
+            if (-not $dcChoice) { Stop-UnknownDatacenter -Name $Datacenter[0] -Views $dcViews }
+        } else {
+            $dcChoice = Select-SingleItem -Items $dcItems -DisplayProperty 'Label' -Title 'Select datacenter to IMPORT into'
+        }
 
         # Folder types present in the file
         $availableTypes = @($data.FolderTypes | ForEach-Object { $_.Type })
@@ -731,16 +1131,22 @@ if ($Mode -eq 'Import') {
             Write-Log "Target datacenter: $($targetDc.Name); folder types: $($types -join ', ')"
 
             if (-not $PSBoundParameters.ContainsKey('MoveObjects')) {
-                $MoveObjects = [switch]((Read-Host '  Move existing objects (VMs, hosts, datastores, switches) into their exported folder? (y/N)').Trim() -match '^[Yy]')
+                $MoveObjects = [switch]((Read-Input '  Move existing objects (VMs, hosts, datastores, switches) into their exported folder? (y/N)') -match '^[Yy]')
             }
             if (-not $PSBoundParameters.ContainsKey('ApplyPermissions')) {
-                $ApplyPermissions = [switch]((Read-Host '  Re-apply folder permissions? (y/N)').Trim() -match '^[Yy]')
+                $ApplyPermissions = [switch]((Read-Input '  Re-apply folder permissions? (y/N)') -match '^[Yy]')
             }
             Write-Log "Move objects: $([bool]$MoveObjects); apply permissions: $([bool]$ApplyPermissions); dry run: $([bool]$DryRun)"
 
+            # A fully parameterised import (#10) runs without the Proceed question
+            $unattended = $ExportFile -and $Datacenter.Count -gt 0 -and $FolderType.Count -gt 0 -and
+                $PSBoundParameters.ContainsKey('MoveObjects') -and $PSBoundParameters.ContainsKey('ApplyPermissions')
             $proceed = $true
-            if (-not $DryRun) {
-                $answer = (Read-Host "  Proceed with changes in datacenter '$($targetDc.Name)'? (y/N)").Trim()
+            if ($unattended -and -not $DryRun) {
+                Write-Log 'Unattended import (all choices given as parameters): no Proceed question.'
+            }
+            elseif (-not $DryRun) {
+                $answer = Read-Input "  Proceed with changes in datacenter '$($targetDc.Name)'? (y/N)"
                 if ($answer -notmatch '^[Yy]') {
                     Write-Log 'Import cancelled by user.' -Level WARNING
                     $proceed = $false
@@ -748,7 +1154,7 @@ if ($Mode -eq 'Import') {
             }
 
             if ($proceed) {
-                $stats = @{ Created = 0; Existing = 0; FolderFail = 0; Moved = 0; InPlace = 0; NotFound = 0; Ambiguous = 0; NotMovable = 0; MoveFail = 0; PermSet = 0; PermPresent = 0; PermFail = 0; PermRoot = 0 }
+                $stats = @{ Created = 0; Existing = 0; FolderFail = 0; Moved = 0; InPlace = 0; NotFound = 0; Ambiguous = 0; NotMovable = 0; MoveSkip = 0; MoveFail = 0; PermSet = 0; PermPresent = 0; PermSkip = 0; PermFail = 0; PermRoot = 0 }
 
                 $roleIdByName = @{}
                 foreach ($r in $authManager.RoleList) { $roleIdByName[$r.Name] = [int]$r.RoleId }
@@ -784,7 +1190,7 @@ if ($Mode -eq 'Import') {
                             $PathMap[$key] = $newRef
                             $current = $newRef
                         } catch {
-                            Write-Log "Could not create folder $(Format-Path $prefix): $(Get-ErrorDetail $_)" -Level WARNING
+                            Add-RunFailure -Action 'Create folder' -Name "$t`:$(Format-Path $prefix)" -Reason (Get-FailReason $_)
                             $stats.FolderFail++
                             $PathMap[$key] = $null
                             return $null
@@ -860,7 +1266,7 @@ if ($Mode -eq 'Import') {
                             }
                             $target = Resolve-TargetFolder -Path $path -PathMap $pathMap
                             if ($null -eq $target) {
-                                $stats.MoveFail++
+                                $stats.MoveSkip++
                                 Write-Log "Skipped $($m.Type) '$($m.Name)': target folder $(Format-Path $path) could not be created." -Level WARNING
                                 continue
                             }
@@ -879,7 +1285,7 @@ if ($Mode -eq 'Import') {
                                 Write-Log "Moved $($m.Type) '$($m.Name)' to $(Format-Path $path)" -Level SUCCESS
                                 $stats.Moved++
                             } catch {
-                                Write-Log "Could not move $($m.Type) '$($m.Name)' to $(Format-Path $path): $(Get-ErrorDetail $_)" -Level WARNING
+                                Add-RunFailure -Action 'Move' -Name "$($m.Type) '$($m.Name)' to $(Format-Path $path)" -Reason (Get-FailReason $_)
                                 $stats.MoveFail++
                             }
                         }
@@ -901,7 +1307,8 @@ if ($Mode -eq 'Import') {
                             }
                             $target = Resolve-TargetFolder -Path $path -PathMap $pathMap
                             if ($null -eq $target) {
-                                $stats.PermFail += $perms.Count
+                                # The folder could not be created; that failure is already listed
+                                $stats.PermSkip += $perms.Count
                                 continue
                             }
                             $current = @()
@@ -912,7 +1319,7 @@ if ($Mode -eq 'Import') {
                                 $label = "$($p.Principal) as '$($p.Role)' on $(Format-Path $path)"
                                 if (-not $roleIdByName.ContainsKey($p.Role)) {
                                     Write-Log "Skipped permission $label`: role not present on this vCenter (import it first, e.g. with VIRoleManager)." -Level WARNING
-                                    $stats.PermFail++
+                                    $stats.PermSkip++
                                     continue
                                 }
                                 $roleId = $roleIdByName[$p.Role]
@@ -938,7 +1345,7 @@ if ($Mode -eq 'Import') {
                                     Write-Log "Set permission $label" -Level SUCCESS
                                     $stats.PermSet++
                                 } catch {
-                                    Write-Log "Could not set permission $label`: $(Get-ErrorDetail $_). Check that the principal exists in this vCenter's identity source." -Level WARNING
+                                    Add-RunFailure -Action 'Set permission' -Name $label -Reason "$(Get-FailReason $_) (check that the principal exists in this vCenter's identity source)"
                                     $stats.PermFail++
                                 }
                             }
@@ -946,14 +1353,20 @@ if ($Mode -eq 'Import') {
                     }
                 }
 
+                # Summaries (#10): red with failures, yellow with only skips, green otherwise.
+                # Objects not found in the target are normal during a migration (not moved
+                # yet), so they don't colour the line; they are listed in the log file.
                 $verb = if ($DryRun) { 'would be ' } else { '' }
-                Write-Log "Folders: $($stats.Created) ${verb}created, $($stats.Existing) already present, $($stats.FolderFail) failed."
+                Write-RunSummary -Line "Folders: $($stats.Created) ${verb}created, $($stats.Existing) already present, $($stats.FolderFail) failed." `
+                    -Failed $stats.FolderFail -Actions 'Create folder'
                 if ($MoveObjects) {
-                    Write-Log "Objects: $($stats.Moved) ${verb}moved, $($stats.InPlace) already in place, $($stats.NotFound) not found in target, $($stats.Ambiguous) ambiguous name, $($stats.NotMovable) not directly in a folder, $($stats.MoveFail) failed."
+                    Write-RunSummary -Line "Objects: $($stats.Moved) ${verb}moved, $($stats.InPlace) already in place, $($stats.NotFound) not found in target, $($stats.Ambiguous) ambiguous name, $($stats.NotMovable) not directly in a folder, $($stats.MoveSkip) skipped (folder missing), $($stats.MoveFail) failed." `
+                        -Failed $stats.MoveFail -Skipped ($stats.Ambiguous + $stats.NotMovable + $stats.MoveSkip) -Actions 'Move'
                     if ($stats.NotFound -gt 0) { Write-Log 'Objects not found in the target are listed in the log file.' }
                 }
                 if ($ApplyPermissions) {
-                    Write-Log "Permissions: $($stats.PermSet) ${verb}set, $($stats.PermPresent) already present, $($stats.PermRoot) on hidden root folders skipped (listed in the log file), $($stats.PermFail) skipped or failed."
+                    Write-RunSummary -Line "Permissions: $($stats.PermSet) ${verb}set, $($stats.PermPresent) already present, $($stats.PermRoot) on hidden root folders skipped (listed in the log file), $($stats.PermSkip) skipped (role or folder missing), $($stats.PermFail) failed." `
+                        -Failed $stats.PermFail -Skipped $stats.PermSkip -Actions 'Set permission'
                 }
                 if ($DryRun) { Write-Log 'Dry run: nothing was changed.' -Level WARNING }
             }
@@ -966,5 +1379,10 @@ if ($Mode -eq 'Import') {
 # =============================================================================
 Write-Log 'Disconnecting from vCenter...'
 Disconnect-VIServer -Server $viConn -Confirm:$false
+if ($script:RunFailures.Count -gt 0) {
+    Write-Log "===== Script finished with $($script:RunFailures.Count) failure(s); see the summary above =====" -Level ERROR
+    Write-Host "`n  Log file: $LogFile`n" -ForegroundColor DarkGray
+    exit 1
+}
 Write-Log '===== Script finished =====' -Level SUCCESS
 Write-Host "`n  Log file: $LogFile`n" -ForegroundColor DarkGray

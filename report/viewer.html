@@ -1,0 +1,640 @@
+<!doctype html>
+<!--
+  VI Export Viewer  v0.2.0
+  Author : Paul van Dieen
+  Blog   : https://www.hollebollevsan.nl
+
+  Shows what a toolkit export holds, compares two exports (source and
+  target), and prints either as a report. One self-contained file: no
+  external scripts, fonts or styles, nothing is uploaded. Open it in a
+  browser and drop export files on it, or let a toolkit write it with the
+  export embedded (-Report).
+
+  Supported in v0.1.0: VIFolderManager, VITagManager.
+
+  CHANGELOG
+    v0.2.0  2026-11-18  Paul van Dieen
+        - ITQ house style (itq-design), without logos: Royal Blue header and
+          text, Orange titles, numbers and primary button, Light Blue soft
+          surfaces, rounded cards with a cool shadow, square Orange markers
+          instead of the key emoji; dark mode on Royal Blue; print in Royal
+          Blue with an Orange rule under the heading. Font Titillium when
+          installed, Calibri otherwise; still nothing external
+    v0.1.0  2026-11-16  Paul van Dieen
+        - Initial version: overview, compare (source/target) and print for
+          VIFolderManager and VITagManager exports
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VI Export Viewer</title>
+<style>
+/* ITQ house style (itq-design skill): Royal Blue text and surfaces, Orange for
+   emphasis and the primary action, Light Blue as the soft secondary. No logos
+   (Paul, 2026-11-18) and nothing external: the file must work offline, so the
+   font is Titillium when installed, Calibri otherwise. */
+:root {
+  --royal: #040559; --orange: #FF4F41; --lightblue: #CDE3F7;
+  --bg: #F4F8FD; --panel: #FFFFFF; --text: #040559; --muted: #535353; --line: #E2E8F0;
+  --head-bg: #040559; --head-text: #FFFFFF; --head-quiet: #CDE3F7;
+  --accent: #FF4F41; --accent-hover: #E63E31; --accent-soft: #FFE3E0;
+  --soft: #E6F1FB; --chip: #E6F1FB; --code: #E6EBEB;
+  --miss: #CC3528; --miss-soft: #FFE3E0; --extra: #040559; --extra-soft: #CDE3F7;
+  --diff: #335964; --diff-soft: #DCE8EA; --same: #535353; --same-soft: #E6EBEB;
+  --shadow-sm: 0 2px 6px rgba(4, 5, 90, 0.08); --shadow-md: 0 8px 24px rgba(4, 5, 90, 0.10);
+  --focus: 0 0 0 3px rgba(255, 79, 65, 0.35);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #02032E; --panel: #0B0C4A; --text: #FFFFFF; --muted: #CDE3F7; --line: #2A2B6E;
+    --head-bg: #02032E; --soft: #1A1B5E; --chip: #1A1B5E; --code: #1A1B5E; --accent-soft: #3A1A30;
+    --miss: #FF8A80; --miss-soft: #3A1A30; --extra: #CDE3F7; --extra-soft: #1A1B5E;
+    --diff: #9FC3CC; --diff-soft: #183640; --same: #A8A8A8; --same-soft: #1F2050;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #02032E; --panel: #0B0C4A; --text: #FFFFFF; --muted: #CDE3F7; --line: #2A2B6E;
+  --head-bg: #02032E; --soft: #1A1B5E; --chip: #1A1B5E; --code: #1A1B5E; --accent-soft: #3A1A30;
+  --miss: #FF8A80; --miss-soft: #3A1A30; --extra: #CDE3F7; --extra-soft: #1A1B5E;
+  --diff: #9FC3CC; --diff-soft: #183640; --same: #A8A8A8; --same-soft: #1F2050;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--text); font: 15px/1.5 "Titillium", Calibri, "Segoe UI", sans-serif; }
+header.app { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: space-between; padding: 14px 24px; background: var(--head-bg); color: var(--head-text); position: sticky; top: 0; z-index: 5; box-shadow: var(--shadow-md); }
+header.app h1 { font-size: 21px; font-weight: 700; margin: 0; letter-spacing: .2px; }
+header.app h1 .em { color: var(--orange); }
+header.app .ver { color: var(--head-quiet); font-weight: 400; font-size: 12px; margin-left: 8px; }
+.tabs { display: flex; gap: 2px; background: rgba(255, 255, 255, .08); border-radius: 6px; padding: 3px; }
+.tabs button { border: 0; background: transparent; color: var(--head-quiet); border-radius: 4px; padding: 6px 16px; font: inherit; font-weight: 600; cursor: pointer; transition: background .16s cubic-bezier(.4,0,.2,1), color .16s; }
+.tabs button:hover { color: #fff; background: rgba(255, 255, 255, .08); }
+.tabs button[aria-pressed="true"] { background: var(--orange); color: #fff; }
+.btn { display: inline-block; border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 6px; padding: 7px 16px; font: inherit; font-weight: 600; cursor: pointer; transition: background .16s cubic-bezier(.4,0,.2,1), border-color .16s; }
+.btn:hover { background: var(--soft); }
+.btn:focus-visible, .tabs button:focus-visible, .file:focus-visible, input:focus-visible, select:focus-visible { outline: none; box-shadow: var(--focus); }
+header.app .btn { background: transparent; color: #fff; border-color: rgba(255, 255, 255, .45); }
+header.app .btn:hover { background: rgba(255, 255, 255, .1); }
+header.app .btn.primary { background: var(--orange); border-color: var(--orange); color: #fff; }
+header.app .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+main.layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 20px; padding: 20px 24px; }
+@media (max-width: 860px) { main.layout { grid-template-columns: minmax(0, 1fr); padding: 14px 16px; } }
+aside.files { display: flex; flex-direction: column; gap: 10px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 20px 24px; box-shadow: var(--shadow-sm); }
+.drop { border: 2px dashed var(--lightblue); border-radius: 16px; padding: 18px; text-align: center; color: var(--muted); background: var(--panel); }
+.drop.over { border-color: var(--orange); background: var(--accent-soft); }
+.file { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--panel); cursor: pointer; position: relative; box-shadow: var(--shadow-sm); transition: transform .16s cubic-bezier(.4,0,.2,1), box-shadow .16s; }
+.file:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
+.file[aria-current="true"] { border-color: var(--orange); box-shadow: 0 0 0 1px var(--orange), var(--shadow-sm); }
+.file .name { font-weight: 600; word-break: break-all; padding-right: 22px; }
+.file .meta { color: var(--muted); font-size: 12px; }
+.file .x { position: absolute; top: 6px; right: 8px; border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 16px; }
+.file .x:hover { color: var(--orange); }
+.badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 6px; background: var(--lightblue); color: var(--royal); }
+h2 { font-size: 24px; font-weight: 700; margin: 0 0 4px; color: var(--orange); }
+h3 { font-size: 16px; font-weight: 700; margin: 22px 0 8px; text-transform: uppercase; letter-spacing: .4px; }
+.sub { color: var(--muted); margin: 0 0 14px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin: 14px 0; }
+.stat { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; background: var(--panel); box-shadow: var(--shadow-sm); }
+.stat .n { font-size: 26px; font-weight: 700; color: var(--orange); line-height: 1.2; }
+.stat .l { color: var(--muted); font-size: 12px; }
+.stat.miss .n { color: var(--miss); } .stat.extra .n { color: var(--extra); } .stat.diff .n { color: var(--diff); } .stat.same .n { color: var(--same); }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 3px 16px; font-size: 14px; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; word-break: break-word; }
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+th { color: var(--text); background: var(--soft); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .3px; }
+tbody tr:hover td { background: var(--soft); }
+.chip { display: inline-block; background: var(--chip); border-radius: 6px; padding: 1px 8px; margin: 1px 3px 1px 0; font-size: 12px; white-space: nowrap; }
+.chip.cat { background: var(--royal); color: #fff; }
+.mono, code { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; }
+code { background: var(--code); padding: 0 4px; border-radius: 4px; }
+.muted { color: var(--muted); }
+.status { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 6px; white-space: nowrap; }
+.s-miss { background: var(--miss-soft); color: var(--miss); } .s-extra { background: var(--extra-soft); color: var(--extra); }
+.s-diff { background: var(--diff-soft); color: var(--diff); } .s-same { background: var(--same-soft); color: var(--same); }
+.toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 10px 0; }
+.toolbar input[type="search"], select { border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 6px; padding: 7px 10px; font: inherit; }
+.toolbar input[type="search"] { min-width: 240px; }
+details.node { margin-left: 18px; }
+details.node > summary { cursor: pointer; padding: 2px 0; }
+details.node > summary::marker { color: var(--orange); }
+details.node > summary .fname { font-weight: 600; }
+.tree { margin-left: -18px; }
+.leaf { margin-left: 34px; padding: 1px 0; }
+.perm { font-size: 12px; color: var(--muted); }
+.mark { display: inline-block; width: 7px; height: 7px; background: var(--orange); margin: 0 7px 1px 0; vertical-align: middle; }
+.empty { color: var(--muted); padding: 34px 10px; text-align: center; }
+.legend { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-size: 12px; color: var(--muted); }
+.printhead { display: none; }
+footer.app { color: var(--muted); font-size: 12px; padding: 8px 24px 24px; }
+footer.app a { color: var(--orange); }
+@media print {
+  :root { --bg: #fff; --panel: #fff; --text: #040559; --muted: #535353; --line: #CDCDDF; --chip: #E6F1FB; --code: #E6EBEB; --soft: #F4F8FD; }
+  header.app, aside.files, .toolbar, .noprint, .file .x { display: none !important; }
+  main.layout { display: block; padding: 0; }
+  .panel { border: 0; padding: 0; box-shadow: none; }
+  .stat { box-shadow: none; }
+  .printhead { display: block; margin-bottom: 10px; border-bottom: 2px solid var(--orange); padding-bottom: 6px; }
+  table { page-break-inside: auto; } tr { page-break-inside: avoid; }
+  h3 { page-break-after: avoid; }
+  body { font-size: 11px; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
+</style>
+</head>
+<body>
+<header class="app">
+  <h1>VI Export <span class="em">Viewer</span><span class="ver" id="ver"></span></h1>
+  <div class="tabs" role="group" aria-label="View">
+    <button type="button" data-mode="overview" aria-pressed="true">Overview</button>
+    <button type="button" data-mode="compare" aria-pressed="false">Compare</button>
+  </div>
+  <div class="actions">
+    <label class="btn primary" for="pick">Open export files</label>
+    <input type="file" id="pick" accept=".json" multiple hidden>
+    <button type="button" class="btn" id="printBtn">Print / PDF</button>
+  </div>
+</header>
+
+<main class="layout">
+  <aside class="files">
+    <div class="drop" id="drop">Drop VIFolderManager or VITagManager export files (.json) here, or use <b>Open export files</b>. Nothing leaves this browser.</div>
+    <div id="fileList"></div>
+  </aside>
+  <section class="panel" id="view" aria-live="polite"></section>
+</main>
+
+<footer class="app">VI Export Viewer &middot; Paul van Dieen &middot; <a href="https://www.hollebollevsan.nl">hollebollevsan.nl</a> &middot; runs locally, nothing is uploaded</footer>
+
+<!-- A toolkit's -Report switch fills this with [{ "fileName": "...", "data": {...} }, ...] -->
+<script type="application/json" id="vi-embedded">[]</script>
+
+<script>
+(function () {
+  'use strict';
+  var VERSION = '0.2.0';
+  document.getElementById('ver').textContent = 'v' + VERSION;
+
+  // ---------------------------------------------------------------- state
+  var state = { files: [], current: 0, mode: 'overview', a: null, b: null, hideSame: true, query: '' };
+  var nextId = 1;
+
+  // ---------------------------------------------------------------- helpers
+  function esc(v) {
+    return String(v === null || v === undefined ? '' : v)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function arr(x) { return x === null || x === undefined ? [] : (Array.isArray(x) ? x : [x]); }
+  function when(v) {
+    if (!v) return '';
+    var d = new Date(v);
+    if (isNaN(d)) return String(v);
+    function p(n) { return (n < 10 ? '0' : '') + n; }
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+  function pathStr(p) { return '/' + arr(p).join('/'); }
+  function statusChip(s) {
+    var t = { miss: 'Missing on target', extra: 'Only on target', diff: 'Different', same: 'Same' }[s];
+    return '<span class="status s-' + s + '">' + t + '</span>';
+  }
+  function matches(text) {
+    if (!state.query) return true;
+    return String(text).toLowerCase().indexOf(state.query.toLowerCase()) >= 0;
+  }
+  var typeLabel = {
+    VirtualMachine: 'VM', HostSystem: 'Host', ClusterComputeResource: 'Cluster', ComputeResource: 'Standalone host',
+    Datacenter: 'Datacenter', Datastore: 'Datastore', StoragePod: 'Datastore cluster', Folder: 'Folder',
+    ResourcePool: 'Resource pool', VirtualApp: 'vApp', VmwareDistributedVirtualSwitch: 'Distributed switch',
+    DistributedVirtualPortgroup: 'Port group', Network: 'Network'
+  };
+  function tl(t) { return typeLabel[t] || t || ''; }
+
+  // ---------------------------------------------------------------- recognise exports
+  function detect(d) {
+    if (!d || typeof d !== 'object') return null;
+    if (d.Tool === 'VIFolderManager' || (d.FolderTypes && d.Datacenter !== undefined)) return 'VIFolderManager';
+    if (d.Tool === 'VITagManager' || d.Definitions || d.Assignments) return 'VITagManager';
+    return null;
+  }
+  function describe(f) {
+    var d = f.data;
+    if (f.tool === 'VIFolderManager') return 'Datacenter ' + (d.Datacenter || '?') + ' · ' + arr(d.FolderTypes).map(function (t) { return t.Type; }).join(', ');
+    var c = arr(d.Content).join(' + ') || (d.Definitions && d.Assignments ? 'Definitions + Assignments' : d.Definitions ? 'Definitions' : 'Assignments');
+    var extra = [];
+    if (arr(d.CategoryFilter).length) extra.push('categories ' + arr(d.CategoryFilter).join(', '));
+    if (arr(d.VMFilter).length) extra.push(arr(d.VMFilter).length + ' VM pattern(s)');
+    return c + (extra.length ? ' · ' + extra.join(' · ') : '');
+  }
+  function addFile(name, data) {
+    var tool = detect(data);
+    if (!tool) { alertMsg('"' + name + '" is not a VIFolderManager or VITagManager export.'); return; }
+    state.files.push({ id: nextId++, name: name, data: data, tool: tool });
+  }
+  var msgTimer;
+  function alertMsg(t) {
+    var el = document.getElementById('drop');
+    el.dataset.orig = el.dataset.orig || el.innerHTML;
+    el.innerHTML = '<b>' + esc(t) + '</b>';
+    clearTimeout(msgTimer);
+    msgTimer = setTimeout(function () { el.innerHTML = el.dataset.orig; }, 4000);
+  }
+  function readFiles(list) {
+    var pending = list.length;
+    Array.prototype.forEach.call(list, function (file) {
+      var r = new FileReader();
+      r.onload = function () {
+        try { addFile(file.name, JSON.parse(String(r.result).replace(/^﻿/, ''))); }
+        catch (e) { alertMsg('Could not read "' + file.name + '": ' + e.message); }
+        if (--pending === 0) { state.current = state.files.length - 1; autoPair(); render(); }
+      };
+      r.readAsText(file);
+    });
+  }
+  // Default compare pair: the two newest files of the same tool, older one as source
+  function autoPair() {
+    if (state.a !== null && state.b !== null && byId(state.a) && byId(state.b)) return;
+    for (var i = state.files.length - 1; i > 0; i--) {
+      for (var j = i - 1; j >= 0; j--) {
+        if (state.files[i].tool === state.files[j].tool) { setPair(state.files[j], state.files[i]); return; }
+      }
+    }
+  }
+  // Older export as source, newer as target; the Swap button turns it round
+  function setPair(x, y) {
+    var tx = Date.parse(x.data.ExportedAt) || 0, ty = Date.parse(y.data.ExportedAt) || 0;
+    if (ty < tx) { var t = x; x = y; y = t; }
+    state.a = x.id; state.b = y.id;
+  }
+  function byId(id) { for (var i = 0; i < state.files.length; i++) if (state.files[i].id === id) return state.files[i]; return null; }
+
+  // ---------------------------------------------------------------- file list
+  function renderFiles() {
+    var html = state.files.map(function (f, i) {
+      var d = f.data;
+      return '<div class="file" data-i="' + i + '" aria-current="' + (state.mode === 'overview' && i === state.current) + '" tabindex="0">' +
+        '<button class="x" data-del="' + f.id + '" title="Remove" aria-label="Remove">&times;</button>' +
+        '<div><span class="badge">' + esc(f.tool) + (d.ToolVersion ? ' ' + esc(d.ToolVersion) : '') + '</span></div>' +
+        '<div class="name">' + esc(f.name) + '</div>' +
+        '<div class="meta">' + esc(d.SourceVCenter || '?') + ' · ' + esc(when(d.ExportedAt)) + '</div>' +
+        '<div class="meta">' + esc(describe(f)) + '</div></div>';
+    }).join('');
+    document.getElementById('fileList').innerHTML = html;
+  }
+
+  // ---------------------------------------------------------------- overview: folders
+  function folderModel(t) {
+    var root = { name: '', children: {}, order: [], perms: [], members: [] };
+    function node(path) {
+      var n = root;
+      arr(path).forEach(function (seg) {
+        if (!n.children[seg]) { n.children[seg] = { name: seg, children: {}, order: [], perms: [], members: [] }; n.order.push(seg); }
+        n = n.children[seg];
+      });
+      return n;
+    }
+    arr(t.Folders).forEach(function (f) { node(f.Path).perms = arr(f.Permissions); });
+    arr(t.Members).forEach(function (m) { node(m.Path).members.push(m); });
+    return root;
+  }
+  function countTree(n) {
+    var c = { folders: 0, members: n.members.length, perms: n.perms.length };
+    n.order.forEach(function (k) { var s = countTree(n.children[k]); c.folders += 1 + s.folders; c.members += s.members; c.perms += s.perms; });
+    return c;
+  }
+  function permText(p) {
+    return esc(p.Principal) + (p.Group ? ' <span class="muted">(group)</span>' : '') + ' &rarr; ' + esc(p.Role) + (p.Propagate ? ' <span class="muted">&darr; propagate</span>' : '');
+  }
+  function treeHtml(n, label, depth) {
+    var sub = countTree(n);
+    var own = n.members.filter(function (m) { return matches(m.Name); });
+    var kids = n.order.map(function (k) { return treeHtml(n.children[k], k, depth + 1); }).filter(Boolean).join('');
+    var selfHit = matches(label) || own.length > 0;
+    if (!selfHit && !kids && state.query) return '';
+    var head = '<summary><span class="fname">' + esc(label) + '</span> <span class="muted">' +
+      (sub.folders ? sub.folders + ' subfolder' + (sub.folders === 1 ? '' : 's') + ' · ' : '') +
+      sub.members + ' object' + (sub.members === 1 ? '' : 's') + '</span>' +
+      (n.perms.length ? ' <span class="chip">' + n.perms.length + ' permission' + (n.perms.length === 1 ? '' : 's') + '</span>' : '') + '</summary>';
+    var perms = n.perms.map(function (p) { return '<div class="leaf perm"><span class="mark" aria-hidden="true"></span>' + permText(p) + '</div>'; }).join('');
+    var mem = own.map(function (m) { return '<div class="leaf"><span class="chip">' + esc(tl(m.Type)) + '</span> ' + esc(m.Name) + '</div>'; }).join('');
+    return '<details class="node" open>' + head + perms + mem + kids + '</details>';
+  }
+  function overviewFolders(f) {
+    var d = f.data;
+    var types = arr(d.FolderTypes);
+    var stats = { folders: 0, members: 0, perms: 0 };
+    types.forEach(function (t) { var c = countTree(folderModel(t)); stats.folders += c.folders; stats.members += c.members; stats.perms += arr(t.Folders).reduce(function (a, x) { return a + arr(x.Permissions).length; }, 0); });
+    var out = headerBlock(f, 'Folder export of datacenter ' + (d.Datacenter || '?'));
+    out += '<div class="stats">' + stat(types.length, 'folder types') + stat(stats.folders, 'folders (roots not counted)') + stat(stats.members, 'objects in folders') + stat(stats.perms, 'folder permissions') + '</div>';
+    out += searchBar('Filter folders and objects');
+    types.forEach(function (t) {
+      out += '<h3>' + esc(t.Type) + ' folders</h3><div class="tree">' + (treeHtml(folderModel(t), t.Type + ' root', 0) || '<div class="muted">No match.</div>') + '</div>';
+    });
+    return out;
+  }
+
+  // ---------------------------------------------------------------- overview: tags
+  function entityKey(e) { return (e.Type || '') + '|' + (e.Name || '') + '|' + (e.InstanceUuid || ''); }
+  function groupByEntity(d) {
+    var g = {}, order = [];
+    function slot(e) {
+      var k = entityKey(e);
+      if (!g[k]) { g[k] = { e: e, tags: [], vals: [] }; order.push(k); }
+      return g[k];
+    }
+    arr(d.Assignments && d.Assignments.TagAssignments).forEach(function (a) { slot(a.Entity).tags.push(a); });
+    arr(d.Assignments && d.Assignments.AttributeValues).forEach(function (v) { slot(v.Entity).vals.push(v); });
+    var dupNames = {};
+    order.forEach(function (k) { var e = g[k].e; var n = e.Type + '|' + e.Name; dupNames[n] = (dupNames[n] || 0) + 1; });
+    return order.map(function (k) { var x = g[k]; x.dup = dupNames[x.e.Type + '|' + x.e.Name] > 1; return x; })
+      .sort(function (a, b) { return (a.e.Type + a.e.Name).localeCompare(b.e.Type + b.e.Name); });
+  }
+  // Several objects with the same type and name (e.g. two folders called
+  // Web) can't be told apart in the export: show a repeated tag as x2
+  function tagLines(tags) {
+    var seen = {}, order = [];
+    tags.forEach(function (t) { var k = t.Category + '|' + t.Tag; if (!seen[k]) { seen[k] = 0; order.push(t); } seen[k]++; });
+    var multi = false;
+    var html = order.map(function (t) {
+      var n = seen[t.Category + '|' + t.Tag]; if (n > 1) multi = true;
+      return '<span class="chip cat">' + esc(t.Category) + '</span><span class="chip">' + esc(t.Tag) + '</span>' + (n > 1 ? ' <b>&times;' + n + '</b>' : '');
+    }).join('<br>');
+    return html + (multi ? '<div class="muted">More than one object has this name; the export does not say which is which.</div>' : '');
+  }
+  function catTypes(c) { var t = arr(c.EntityType).filter(function (x) { return x && x !== 'All'; }); return t.length ? t : ['All']; }
+  function overviewTags(f) {
+    var d = f.data, def = d.Definitions || {}, asg = d.Assignments || {};
+    var cats = arr(def.TagCategories), tags = arr(def.Tags), attrs = arr(def.CustomAttributes);
+    var groups = groupByEntity(d);
+    var out = headerBlock(f, 'Tags and custom attributes');
+    out += '<div class="stats">' +
+      (d.Definitions ? stat(cats.length, 'tag categories') + stat(tags.length, 'tags') + stat(attrs.length, 'custom attributes') : '') +
+      (d.Assignments ? stat(arr(asg.TagAssignments).length, 'tag assignments') + stat(arr(asg.AttributeValues).length, 'attribute values') + stat(groups.length, 'objects') : '') + '</div>';
+    out += searchBar('Filter by name, category, tag or value');
+    if (d.Definitions) {
+      out += '<h3>Tag categories and tags</h3><div class="tablewrap"><table><thead><tr><th>Category</th><th>Per object</th><th>Object types</th><th>Tags</th></tr></thead><tbody>';
+      var rows = cats.map(function (c) {
+        var ct = tags.filter(function (t) { return t.Category === c.Name; });
+        var hay = c.Name + ' ' + ct.map(function (t) { return t.Name; }).join(' ');
+        if (!matches(hay)) return '';
+        return '<tr><td><b>' + esc(c.Name) + '</b>' + (c.Description ? '<div class="muted">' + esc(c.Description) + '</div>' : '') + '</td>' +
+          '<td>' + (c.Cardinality === 'Single' ? 'One tag' : 'Several tags') + '</td>' +
+          '<td>' + catTypes(c).map(function (t) { return '<span class="chip">' + esc(t === 'All' ? 'All types' : t) + '</span>'; }).join('') + '</td>' +
+          '<td>' + (ct.length ? ct.map(function (t) { return '<span class="chip" title="' + esc(t.Description) + '">' + esc(t.Name) + '</span>'; }).join('') : '<span class="muted">none</span>') + '</td></tr>';
+      }).join('');
+      out += (rows || '<tr><td colspan="4" class="muted">No match.</td></tr>') + '</tbody></table></div>';
+      out += '<h3>Custom attributes</h3><div class="tablewrap"><table><thead><tr><th>Attribute</th><th>Applies to</th></tr></thead><tbody>';
+      var arows = attrs.filter(function (a) { return matches(a.Name); }).map(function (a) {
+        return '<tr><td>' + esc(a.Name) + '</td><td>' + (a.TargetType ? esc(tl(a.TargetType)) : '<span class="muted">Global (all types)</span>') + '</td></tr>';
+      }).join('');
+      out += (arows || '<tr><td colspan="2" class="muted">None.</td></tr>') + '</tbody></table></div>';
+      if (d.IncludeSystemAttributes === false) out += '<p class="muted">System custom attributes (com.vmware.*, VMSP-* and the like) were skipped on export.</p>';
+    }
+    if (d.Assignments) {
+      out += '<h3>Per object</h3><div class="tablewrap"><table><thead><tr><th>Object</th><th>Tags</th><th>Custom attribute values</th></tr></thead><tbody>';
+      var grows = groups.map(function (x) {
+        var hay = x.e.Name + ' ' + x.tags.map(function (t) { return t.Category + ' ' + t.Tag; }).join(' ') + ' ' + x.vals.map(function (v) { return v.Attribute + ' ' + v.Value; }).join(' ');
+        if (!matches(hay)) return '';
+        return '<tr><td><span class="chip">' + esc(tl(x.e.Type)) + '</span> <b>' + esc(x.e.Name) + '</b>' +
+          (x.dup && x.e.InstanceUuid ? '<div class="muted mono">' + esc(x.e.InstanceUuid) + '</div>' : '') + '</td>' +
+          '<td>' + (x.tags.length ? tagLines(x.tags) : '<span class="muted">none</span>') + '</td>' +
+          '<td>' + (x.vals.length ? x.vals.map(function (v) { return esc(v.Attribute) + ' = <code>' + esc(v.Value) + '</code>'; }).join('<br>') : '<span class="muted">none</span>') + '</td></tr>';
+      }).join('');
+      out += (grows || '<tr><td colspan="3" class="muted">No match.</td></tr>') + '</tbody></table></div>';
+    }
+    return out;
+  }
+
+  // ---------------------------------------------------------------- shared blocks
+  function stat(n, l, cls) { return '<div class="stat' + (cls ? ' ' + cls : '') + '"><div class="n">' + n + '</div><div class="l">' + esc(l) + '</div></div>'; }
+  function headerBlock(f, title) {
+    var d = f.data;
+    return '<div class="printhead"><b>VI Export Viewer v' + VERSION + '</b> · printed ' + esc(when(new Date().toISOString())) + '</div>' +
+      '<h2>' + esc(title) + '</h2>' +
+      '<dl class="kv"><dt>Export file</dt><dd>' + esc(f.name) + '</dd><dt>Made by</dt><dd>' + esc(f.tool) + (d.ToolVersion ? ' ' + esc(d.ToolVersion) : '') + '</dd>' +
+      '<dt>vCenter</dt><dd>' + esc(d.SourceVCenter || '?') + '</dd><dt>Exported</dt><dd>' + esc(when(d.ExportedAt)) + '</dd>' +
+      (f.tool === 'VITagManager' ? '<dt>Content</dt><dd>' + esc(describe(f)) + '</dd>' : '') + '</dl>';
+  }
+  function searchBar(ph) {
+    return '<div class="toolbar"><input type="search" id="q" placeholder="' + esc(ph) + '" value="' + esc(state.query) + '" aria-label="' + esc(ph) + '"></div>';
+  }
+
+  // ---------------------------------------------------------------- compare
+  function rowsTable(cols, rows) {
+    var shown = rows.filter(function (r) { return !(state.hideSame && r.s === 'same') && matches(r.hay); });
+    if (!shown.length) {
+      var allSame = rows.length && rows.every(function (r) { return r.s === 'same'; });
+      var msg = !rows.length ? 'Nothing in either export.' : (allSame && !state.query ? 'All ' + rows.length + ' are the same.' : 'Nothing to show with the current filter.');
+      return '<p class="muted">' + msg + '</p>';
+    }
+    return '<div class="tablewrap"><table><thead><tr>' + cols.map(function (c) { return '<th>' + esc(c) + '</th>'; }).join('') + '</tr></thead><tbody>' +
+      shown.map(function (r) { return '<tr>' + r.cells.map(function (c) { return '<td>' + c + '</td>'; }).join('') + '</tr>'; }).join('') + '</tbody></table></div>';
+  }
+  function tally(rows) {
+    var t = { miss: 0, extra: 0, diff: 0, same: 0 };
+    rows.forEach(function (r) { t[r.s]++; });
+    return t;
+  }
+  function permKey(p) { return p.Principal + '|' + p.Role + '|' + (p.Propagate ? 1 : 0); }
+  function compareFolders(A, B) {
+    var all = [], objRows = [];
+    var types = {};
+    arr(A.FolderTypes).forEach(function (t) { types[t.Type] = { a: t }; });
+    arr(B.FolderTypes).forEach(function (t) { (types[t.Type] = types[t.Type] || {}).b = t; });
+    var out = '';
+    Object.keys(types).forEach(function (type) {
+      var ta = types[type].a, tb = types[type].b, map = {};
+      arr(ta && ta.Folders).forEach(function (f) { map[pathStr(f.Path)] = { a: f }; });
+      arr(tb && tb.Folders).forEach(function (f) { (map[pathStr(f.Path)] = map[pathStr(f.Path)] || {}).b = f; });
+      var rows = Object.keys(map).sort().filter(function (p) { return p !== '/'; }).map(function (p) {
+        var x = map[p], s, det = '';
+        if (x.a && !x.b) s = 'miss';
+        else if (!x.a && x.b) s = 'extra';
+        else {
+          var pa = arr(x.a.Permissions).map(permKey), pb = arr(x.b.Permissions).map(permKey);
+          var lost = pa.filter(function (k) { return pb.indexOf(k) < 0; }), added = pb.filter(function (k) { return pa.indexOf(k) < 0; });
+          s = lost.length || added.length ? 'diff' : 'same';
+          det = lost.map(function (k) { var q = k.split('|'); return '<div class="perm">&minus; ' + esc(q[0]) + ' &rarr; ' + esc(q[1]) + (q[2] === '1' ? ' &darr;' : '') + ' <span class="muted">(not on target)</span></div>'; }).join('') +
+            added.map(function (k) { var q = k.split('|'); return '<div class="perm">+ ' + esc(q[0]) + ' &rarr; ' + esc(q[1]) + (q[2] === '1' ? ' &darr;' : '') + ' <span class="muted">(only on target)</span></div>'; }).join('');
+        }
+        var np = arr((x.a || x.b).Permissions).length;
+        return { s: s, hay: type + ' ' + p, cells: [statusChip(s), esc(p), det || (np ? '<span class="muted">' + np + ' permission(s)</span>' : '')] };
+      });
+      all = all.concat(rows);
+      out += '<h3>' + esc(type) + ' folders</h3>' + rowsTable(['Status', 'Folder', 'Permissions'], rows);
+      // objects: where do they sit
+      var om = {};
+      arr(ta && ta.Members).forEach(function (m) { om[m.Type + '|' + m.Name] = { a: m }; });
+      arr(tb && tb.Members).forEach(function (m) { (om[m.Type + '|' + m.Name] = om[m.Type + '|' + m.Name] || {}).b = m; });
+      Object.keys(om).sort().forEach(function (k) {
+        var x = om[k], m = x.a || x.b, s;
+        if (x.a && !x.b) s = 'miss'; else if (!x.a && x.b) s = 'extra'; else s = pathStr(x.a.Path) === pathStr(x.b.Path) ? 'same' : 'diff';
+        objRows.push({ s: s, hay: m.Name + ' ' + type, cells: [statusChip(s), '<span class="chip">' + esc(tl(m.Type)) + '</span> ' + esc(m.Name), x.a ? esc(pathStr(x.a.Path)) : '<span class="muted">&ndash;</span>', x.b ? esc(pathStr(x.b.Path)) : '<span class="muted">&ndash;</span>'] });
+      });
+    });
+    out += '<h3>Objects</h3><p class="sub">Matched by type and name. "Missing on target" here usually means the VM hasn\'t been migrated yet.</p>' +
+      rowsTable(['Status', 'Object', 'Folder in source', 'Folder in target'], objRows);
+    return { html: out, rows: all.concat(objRows) };
+  }
+  function compareTags(A, B) {
+    var out = '', all = [];
+    var da = A.Definitions || {}, db = B.Definitions || {};
+    if (A.Definitions || B.Definitions) {
+      var cm = {};
+      arr(da.TagCategories).forEach(function (c) { cm[c.Name] = { a: c }; });
+      arr(db.TagCategories).forEach(function (c) { (cm[c.Name] = cm[c.Name] || {}).b = c; });
+      var crows = Object.keys(cm).sort().map(function (n) {
+        var x = cm[n], s, det = '';
+        if (x.a && !x.b) s = 'miss'; else if (!x.a && x.b) s = 'extra';
+        else {
+          var ta = catTypes(x.a).slice().sort().join(', '), tb = catTypes(x.b).slice().sort().join(', ');
+          var diffs = [];
+          if (x.a.Cardinality !== x.b.Cardinality) diffs.push('per object: ' + (x.a.Cardinality === 'Single' ? 'one' : 'several') + ' &rarr; ' + (x.b.Cardinality === 'Single' ? 'one' : 'several'));
+          if (ta !== tb) diffs.push('object types: ' + esc(ta) + ' &rarr; ' + esc(tb));
+          s = diffs.length ? 'diff' : 'same'; det = diffs.join('<br>');
+        }
+        return { s: s, hay: n, cells: [statusChip(s), '<b>' + esc(n) + '</b>', det] };
+      });
+      var tm = {};
+      arr(da.Tags).forEach(function (t) { tm[t.Category + '|' + t.Name] = { a: t }; });
+      arr(db.Tags).forEach(function (t) { (tm[t.Category + '|' + t.Name] = tm[t.Category + '|' + t.Name] || {}).b = t; });
+      var trows = Object.keys(tm).sort().map(function (k) {
+        var x = tm[k], t = x.a || x.b, s = x.a && !x.b ? 'miss' : (!x.a && x.b ? 'extra' : 'same');
+        return { s: s, hay: t.Category + ' ' + t.Name, cells: [statusChip(s), '<span class="chip cat">' + esc(t.Category) + '</span>', esc(t.Name)] };
+      });
+      var am = {};
+      arr(da.CustomAttributes).forEach(function (a) { am[a.Name] = { a: a }; });
+      arr(db.CustomAttributes).forEach(function (a) { (am[a.Name] = am[a.Name] || {}).b = a; });
+      var arows = Object.keys(am).sort().map(function (n) {
+        var x = am[n], s, det = '';
+        function lab(v) { return v.TargetType ? tl(v.TargetType) : 'Global'; }
+        if (x.a && !x.b) s = 'miss'; else if (!x.a && x.b) s = 'extra';
+        else { s = (x.a.TargetType || '') === (x.b.TargetType || '') ? 'same' : 'diff'; if (s === 'diff') det = 'applies to: ' + esc(lab(x.a)) + ' &rarr; ' + esc(lab(x.b)); }
+        return { s: s, hay: n, cells: [statusChip(s), esc(n), det || esc(lab(x.a || x.b))] };
+      });
+      out += '<h3>Tag categories</h3>' + rowsTable(['Status', 'Category', 'Difference'], crows);
+      out += '<h3>Tags</h3>' + rowsTable(['Status', 'Category', 'Tag'], trows);
+      out += '<h3>Custom attributes</h3>' + rowsTable(['Status', 'Attribute', 'Applies to / difference'], arows);
+      all = all.concat(crows, trows, arows);
+    }
+    if (A.Assignments || B.Assignments) {
+      function ek(e) { return (e.Type || '') + '|' + (e.Name || ''); }
+      var asA = A.Assignments || {}, asB = B.Assignments || {};
+      var gm = {};
+      arr(asA.TagAssignments).forEach(function (t) { gm[ek(t.Entity) + '#' + t.Category + '|' + t.Tag] = { a: t }; });
+      arr(asB.TagAssignments).forEach(function (t) { var k = ek(t.Entity) + '#' + t.Category + '|' + t.Tag; (gm[k] = gm[k] || {}).b = t; });
+      var grows = Object.keys(gm).sort().map(function (k) {
+        var x = gm[k], t = x.a || x.b, s = x.a && !x.b ? 'miss' : (!x.a && x.b ? 'extra' : 'same');
+        return { s: s, hay: t.Entity.Name + ' ' + t.Category + ' ' + t.Tag, cells: [statusChip(s), '<span class="chip">' + esc(tl(t.Entity.Type)) + '</span> ' + esc(t.Entity.Name), '<span class="chip cat">' + esc(t.Category) + '</span><span class="chip">' + esc(t.Tag) + '</span>'] };
+      });
+      var vm = {};
+      arr(asA.AttributeValues).forEach(function (v) { vm[ek(v.Entity) + '#' + v.Attribute] = { a: v }; });
+      arr(asB.AttributeValues).forEach(function (v) { var k = ek(v.Entity) + '#' + v.Attribute; (vm[k] = vm[k] || {}).b = v; });
+      var vrows = Object.keys(vm).sort().map(function (k) {
+        var x = vm[k], v = x.a || x.b, s;
+        if (x.a && !x.b) s = 'miss'; else if (!x.a && x.b) s = 'extra'; else s = String(x.a.Value) === String(x.b.Value) ? 'same' : 'diff';
+        return { s: s, hay: v.Entity.Name + ' ' + v.Attribute + ' ' + v.Value, cells: [statusChip(s), '<span class="chip">' + esc(tl(v.Entity.Type)) + '</span> ' + esc(v.Entity.Name), esc(v.Attribute), x.a ? '<code>' + esc(x.a.Value) + '</code>' : '<span class="muted">&ndash;</span>', x.b ? '<code>' + esc(x.b.Value) + '</code>' : '<span class="muted">&ndash;</span>'] };
+      });
+      out += '<h3>Tag assignments</h3><p class="sub">Matched by object type and name. Objects with the same name are compared as one.</p>' + rowsTable(['Status', 'Object', 'Tag'], grows);
+      out += '<h3>Custom attribute values</h3>' + rowsTable(['Status', 'Object', 'Attribute', 'Source', 'Target'], vrows);
+      all = all.concat(grows, vrows);
+    }
+    return { html: out, rows: all };
+  }
+  function renderCompare() {
+    if (state.files.length < 2) return '<div class="empty">Load two exports of the same toolkit, for example one from the source vCenter and one from the target, to compare them.</div>';
+    autoPair();
+    var A = byId(state.a), B = byId(state.b);
+    function opts(sel) {
+      return state.files.map(function (f) { return '<option value="' + f.id + '"' + (f.id === sel ? ' selected' : '') + '>' + esc(f.name) + '</option>'; }).join('');
+    }
+    var head = '<div class="toolbar noprint"><label>Source <select id="selA">' + opts(state.a) + '</select></label>' +
+      '<label>Target <select id="selB">' + opts(state.b) + '</select></label>' +
+      '<button type="button" class="btn" id="swap" title="Swap source and target">&#8646; Swap</button>' +
+      '<label><input type="checkbox" id="hideSame"' + (state.hideSame ? ' checked' : '') + '> Hide items that are the same</label>' +
+      '<input type="search" id="q" placeholder="Filter" value="' + esc(state.query) + '" aria-label="Filter"></div>';
+    if (!A || !B) return head + '<div class="empty">Pick a source and a target.</div>';
+    if (A.tool !== B.tool) return head + '<div class="empty">These two files come from different toolkits (' + esc(A.tool) + ' and ' + esc(B.tool) + ').</div>';
+    var res = A.tool === 'VIFolderManager' ? compareFolders(A.data, B.data) : compareTags(A.data, B.data);
+    var t = tally(res.rows);
+    var intro = '<div class="printhead"><b>VI Export Viewer v' + VERSION + '</b> · printed ' + esc(when(new Date().toISOString())) + '</div>' +
+      '<h2>Compare: ' + esc(A.tool) + '</h2>' +
+      '<dl class="kv"><dt>Source</dt><dd>' + esc(A.name) + ' · ' + esc(A.data.SourceVCenter || '?') + ' · ' + esc(when(A.data.ExportedAt)) + '</dd>' +
+      '<dt>Target</dt><dd>' + esc(B.name) + ' · ' + esc(B.data.SourceVCenter || '?') + ' · ' + esc(when(B.data.ExportedAt)) + '</dd>' +
+      (A.tool === 'VITagManager' ? '<dt>Content</dt><dd>' + esc(describe(A)) + ' &harr; ' + esc(describe(B)) + '</dd>' : '<dt>Datacenter</dt><dd>' + esc(A.data.Datacenter) + ' &harr; ' + esc(B.data.Datacenter) + '</dd>') + '</dl>' +
+      '<div class="stats">' + stat(t.miss, 'missing on target', 'miss') + stat(t.diff, 'different', 'diff') + stat(t.extra, 'only on target', 'extra') + stat(t.same, 'the same', 'same') + '</div>' +
+      (state.hideSame && t.same ? '<p class="muted">' + t.same + ' item(s) that are the same are hidden.</p>' : '');
+    return head + intro + res.html;
+  }
+
+  // ---------------------------------------------------------------- render
+  function render() {
+    renderFiles();
+    document.querySelectorAll('.tabs button').forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.mode === state.mode)); });
+    var v = document.getElementById('view'), html;
+    if (state.mode === 'compare') html = renderCompare();
+    else if (!state.files.length) html = '<div class="empty">No export loaded yet.<br>Drop a VIFolderManager or VITagManager export here to see what it holds.</div>';
+    else {
+      var f = state.files[Math.min(state.current, state.files.length - 1)];
+      html = f.tool === 'VIFolderManager' ? overviewFolders(f) : overviewTags(f);
+    }
+    var hadFocus = document.activeElement && document.activeElement.id === 'q';
+    var pos = hadFocus ? document.activeElement.selectionStart : 0;
+    v.innerHTML = html;
+    if (hadFocus) { var q = document.getElementById('q'); if (q) { q.focus(); q.setSelectionRange(pos, pos); } }
+  }
+
+  // ---------------------------------------------------------------- events
+  document.querySelector('.tabs').addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (!b) return;
+    state.mode = b.dataset.mode; render();
+  });
+  document.getElementById('fileList').addEventListener('click', function (e) {
+    var del = e.target.closest('[data-del]');
+    if (del) {
+      var id = Number(del.dataset.del);
+      state.files = state.files.filter(function (f) { return f.id !== id; });
+      if (state.a === id) state.a = null; if (state.b === id) state.b = null;
+      state.current = Math.max(0, Math.min(state.current, state.files.length - 1));
+      render(); return;
+    }
+    var card = e.target.closest('.file'); if (!card) return;
+    state.current = Number(card.dataset.i); state.mode = 'overview'; render();
+  });
+  document.getElementById('view').addEventListener('click', function (e) {
+    if (e.target.closest('#swap')) { var t = state.a; state.a = state.b; state.b = t; render(); }
+  });
+  document.getElementById('view').addEventListener('input', function (e) {
+    if (e.target.id === 'q') { state.query = e.target.value; render(); }
+  });
+  document.getElementById('view').addEventListener('change', function (e) {
+    if (e.target.id === 'selA') state.a = Number(e.target.value);
+    else if (e.target.id === 'selB') state.b = Number(e.target.value);
+    else if (e.target.id === 'hideSame') state.hideSame = e.target.checked;
+    else return;
+    render();
+  });
+  document.getElementById('pick').addEventListener('change', function (e) { if (e.target.files.length) readFiles(e.target.files); e.target.value = ''; });
+  var drop = document.getElementById('drop');
+  ['dragenter', 'dragover'].forEach(function (n) { document.addEventListener(n, function (e) { e.preventDefault(); drop.classList.add('over'); }); });
+  ['dragleave', 'drop'].forEach(function (n) { document.addEventListener(n, function (e) { e.preventDefault(); if (n === 'drop' || e.target === document.documentElement) drop.classList.remove('over'); }); });
+  document.addEventListener('drop', function (e) { if (e.dataTransfer && e.dataTransfer.files.length) readFiles(e.dataTransfer.files); });
+  document.getElementById('printBtn').addEventListener('click', function () { window.print(); });
+  // Print everything: open all folder nodes, clear the filter
+  window.addEventListener('beforeprint', function () {
+    document.querySelectorAll('details').forEach(function (d) { d.open = true; });
+  });
+
+  // ---------------------------------------------------------------- embedded exports (-Report)
+  try {
+    var emb = JSON.parse(document.getElementById('vi-embedded').textContent || '[]');
+    arr(emb).forEach(function (x) { if (x && x.data) addFile(x.fileName || 'export.json', x.data); });
+    if (state.files.length === 2 && state.files[0].tool === state.files[1].tool) { setPair(state.files[0], state.files[1]); state.mode = 'compare'; }
+  } catch (e) { alertMsg('Embedded export could not be read: ' + e.message); }
+  render();
+})();
+</script>
+</body>
+</html>

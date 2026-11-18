@@ -101,6 +101,13 @@
     Import mode: log what would be created, moved and applied without
     changing anything.
 
+.PARAMETER Report
+    Export mode: also write an HTML report next to each JSON file (same
+    name, .html) that shows the folder trees, objects and permissions. It's
+    the VI Export Viewer from report\viewer.html with the export embedded:
+    one file, opens offline in any browser, can be printed to PDF. Drop a
+    second export on it to compare source and target.
+
 .PARAMETER CredentialPath
     Path to the saved credential file. Defaults to <vCenterServer>.cred
     next to the script.
@@ -144,9 +151,13 @@
     # per VM the destination folder and its ID on the target vCenter
     .\Invoke-VIFolderManager.ps1 -vCenterServer vc02.lab.local -Mode Import -FolderType VM -MoveObjects:$false -ApplyPermissions:$false -Csv
 
+.EXAMPLE
+    # Export with an HTML report to check what went into the file
+    .\Invoke-VIFolderManager.ps1 -vCenterServer vc01.lab.local -Mode Export -FolderType VM,Host,Datastore,Network -Report
+
 .NOTES
     Script   : Invoke-VIFolderManager.ps1
-    Version  : 1.5.1
+    Version  : 1.6.0
     Author   : Paul van Dieen
     Blog     : https://www.hollebollevsan.nl
     Requires : PowerShell 7.4+, VCF.PowerCLI 9.0+ (or VMware.PowerCLI 13+)
@@ -157,6 +168,14 @@
 #>
 
 <# CHANGELOG
+    v1.6.0  2026-11-19  Paul van Dieen
+        - -Report: an HTML report next to the export (VI Export Viewer 0.2.0
+          with the export embedded, report\viewer.html): overview, compare
+          with a second export, print to PDF. ITQ house style without
+          logos, works offline. Every '<' in the export is escaped, so no
+          name can end the embedded block (the 2026-11-16 draft of this
+          feature had a no-op escape and was never released)
+
     v1.5.1  2026-11-19  Paul van Dieen
         - Scale (#16), measured on VCF 9.1.1 with 5000 folders and 500
           permissions: export from 2:11 to 3 s, import -DryRun from 29 to
@@ -308,6 +327,9 @@ param(
     [switch]$DryRun,
 
     [Parameter(Mandatory = $false)]
+    [switch]$Report,
+
+    [Parameter(Mandatory = $false)]
     [string]$CredentialPath = '',
 
     [Parameter(Mandatory = $false)]
@@ -320,7 +342,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$scriptVersion = '1.5.1'
+$scriptVersion = '1.6.0'
 $scriptAuthor  = 'Paul van Dieen'
 $scriptBlogUrl = 'https://www.hollebollevsan.nl'
 $scriptDir     = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
@@ -908,6 +930,10 @@ if ($Mode -ne 'Import' -and ($DryRun -or $PSBoundParameters.ContainsKey('MoveObj
     Write-Host '  [WARN] -MoveObjects, -ApplyPermissions and -DryRun only apply in Import mode and will be ignored.' -ForegroundColor Yellow
 }
 
+if ($Mode -eq 'Import' -and $Report) {
+    Write-Host '  [WARN] -Report only applies in Export mode and will be ignored.' -ForegroundColor Yellow
+}
+
 # --- Credential Management ------------------------------------------------------
 $safeVc = $vCenterServer -replace '[^\w\-.]', '_'
 if (-not $CredentialPath) { $CredentialPath = Join-Path $scriptDir "$safeVc.cred" }
@@ -1069,6 +1095,31 @@ function Get-PermissionIndex {
     }
 }
 
+function Write-ExportReport {
+    # -Report: the VI Export Viewer (report\viewer.html) with the export
+    # embedded, written next to the JSON. Same code as New-VIExportReport.ps1
+    # 0.1.1 in the VIExportViewer repo. The file is embedded as it is; every
+    # '<' becomes the JSON escape backslash-u003c (backslash built with
+    # [char]92, so no editor can strip it), so no export text can close the
+    # script element; JSON.parse in the browser turns it back into '<'.
+    param([string]$JsonPath)
+    $viewer = Join-Path (Join-Path $scriptDir 'report') 'viewer.html'
+    $marker = '<script type="application/json" id="vi-embedded">[]</script>'
+    try {
+        if (-not (Test-Path -Path $viewer -PathType Leaf)) { throw "report\viewer.html not found next to the script" }
+        $html = Get-Content -Path $viewer -Raw -Encoding UTF8
+        if (-not $html.Contains($marker)) { throw "report\viewer.html has no embed block" }
+        $raw  = (Get-Content -Path $JsonPath -Raw -Encoding UTF8).TrimStart([char]0xFEFF)
+        $item = '{"fileName":' + (ConvertTo-Json -InputObject (Split-Path $JsonPath -Leaf) -Compress) + ',"data":' + $raw + '}'
+        $json = ('[' + $item + ']').Replace('<', ([string][char]92 + 'u003c'))
+        $out  = [System.IO.Path]::ChangeExtension($JsonPath, '.html')
+        Set-Content -Path $out -Value ($html.Replace($marker, '<script type="application/json" id="vi-embedded">' + $json + '</script>')) -Encoding UTF8 -NoNewline
+        Write-Log "Report: $out (open it in a browser; drop a second export on it to compare)" -Level SUCCESS
+    } catch {
+        Write-Log "Report not written: $($_.Exception.Message). The export itself is fine." -Level WARNING
+    }
+}
+
 function Get-FolderPermissions {
     # Permissions defined directly on the folder (not inherited)
     param([Parameter(Mandatory = $true)]$MoRef, [Parameter(Mandatory = $true)]$RoleNameById, $PermissionIndex = $null, [switch]$Direct)
@@ -1219,6 +1270,7 @@ if ($Mode -eq 'Export') {
                     @($rows) | Sort-Object FolderType, Path, Name | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
                     Write-Log "Placement list: $csvPath ($(@($rows).Count) object(s))" -Level SUCCESS
                 }
+                if ($Report) { Write-ExportReport -JsonPath $jsonPath }
                 $exportOk++
             }
             catch {

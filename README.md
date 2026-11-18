@@ -19,6 +19,20 @@ The script connects to a vCenter, then runs one of two modes. Pass `-Mode Export
 
 **Failures stand out.** A datacenter that fails to export, a folder that can't be created, an object that can't be moved and a permission that can't be set are logged in red as `FAILED …`, with vCenter's own message. Each summary line is red when something failed, yellow when something was only skipped (an ambiguous name, a role missing on the target), green otherwise, and is followed by the list of failures. Objects that are not in the target yet don't colour the line: during a migration that's normal.
 
+### Filtering a picker
+
+The filter works in the datacenter picker and the export-file picker. While a filter is on, the prompt shows it, for example `Your selection (filter: /DC01, 3 shown)`.
+
+| To | Type |
+|---|---|
+| Narrow the list | A wildcard (`*DC01*`) or `/text` for a substring |
+| Change the filter | The new filter straight away; it searches the full list again, not within the previous filter |
+| Clear the filter | `reset`, or just Enter |
+| See everything in the current list | `list` |
+
+The list is renumbered after every filter and after clearing it, so pick the number from the list shown just above the prompt. `all` takes what the filter shows. A filter that matches nothing leaves the list as it was.
+
+
 ### Export
 
 1. Pick one or more datacenters and the folder types (or pass `-Datacenter`, names or wildcards, and `-FolderType`).

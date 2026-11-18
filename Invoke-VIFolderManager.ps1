@@ -1,4 +1,5 @@
 #Requires -Version 7.4
+
 <#
 .SYNOPSIS
     Export and import vCenter inventory folder structures (VM, Host, Datastore
@@ -97,14 +98,21 @@
 
 .NOTES
     Script   : Invoke-VIFolderManager.ps1
-    Version  : 1.2.0
+    Version  : 1.2.1
     Author   : Paul van Dieen
     Blog     : https://www.hollebollevsan.nl
     Requires : PowerShell 7.4+, VCF.PowerCLI 9.0+ (or VMware.PowerCLI 13+)
     Tested   : VCF 9.1.1 and VCF 9.0.2 management vCenters (Holodeck lab,
                2026-11-12), incl. import across the two vCenters
+#>
 
-.CHANGELOG
+<# CHANGELOG
+    v1.2.1  2026-11-18  Paul van Dieen
+        - Get-Help shows the full help again: the changelog moved out of the
+          help block into its own comment block (the unknown .CHANGELOG
+          keyword made Get-Help ignore the whole help block)
+        - Blank line between #Requires and the help block, for the same reason
+
     v1.2.0  2026-11-16  Paul van Dieen
         - Minimum PowerShell is now 7.4: VCF.PowerCLI 9.x needs PowerShell 7
           (KB 409981); #Requires, .NOTES and README updated (#2)
@@ -184,7 +192,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$scriptVersion = '1.2.0'
+$scriptVersion = '1.2.1'
 $scriptAuthor  = 'Paul van Dieen'
 $scriptBlogUrl = 'https://www.hollebollevsan.nl'
 $scriptDir     = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }

@@ -72,6 +72,17 @@
     Directory to write log files to. Defaults to a "Logs" subfolder next to
     the script.
 
+.PARAMETER Csv
+    Export mode: also write a placement list next to each JSON file,
+    Folders_<datacenter>_<timestamp>_placement.csv, one row per object:
+    FolderType, Path, FolderId, ObjectType, Name, Id (vCenter IDs such as
+    group-v4 and vm-17; the JSON holds the same IDs).
+    Import mode: write a target placement list next to the export file,
+    <export>_target-<datacenter>.csv, one row per exported object with its
+    folder path and the ID of that folder on THIS vCenter (TargetFolderId).
+    Run the import before the migration (with -MoveObjects:$false) and the
+    list tells HCX which destination folder each VM goes to.
+
 .PARAMETER IncludeSystemFolders
     Export mode: also export the top-level folders that vCenter, the
     Supervisor and NSX manage themselves (VM: vCLS, Namespaces; Network:
@@ -128,9 +139,14 @@
     # Unattended import after a migration wave: newest export of DC01, move VMs, no permissions
     .\Invoke-VIFolderManager.ps1 -vCenterServer vc02.lab.local -Mode Import -ExportFile 'Folders_DC01_*' -Datacenter DC01 -FolderType VM -MoveObjects -ApplyPermissions:$false
 
+.EXAMPLE
+    # Before an HCX wave: recreate the folders on the target, no moves, and list
+    # per VM the destination folder and its ID on the target vCenter
+    .\Invoke-VIFolderManager.ps1 -vCenterServer vc02.lab.local -Mode Import -FolderType VM -MoveObjects:$false -ApplyPermissions:$false -Csv
+
 .NOTES
     Script   : Invoke-VIFolderManager.ps1
-    Version  : 1.4.0
+    Version  : 1.5.0
     Author   : Paul van Dieen
     Blog     : https://www.hollebollevsan.nl
     Requires : PowerShell 7.4+, VCF.PowerCLI 9.0+ (or VMware.PowerCLI 13+)
@@ -139,6 +155,21 @@
 #>
 
 <# CHANGELOG
+    v1.5.0  2026-11-18  Paul van Dieen
+        - IDs in the export (#14): every folder and object gets its vCenter
+          ID (Id, for example group-v4 and vm-17), and every object the ID of
+          its folder (FolderId). Import still matches by type and name;
+          older exports without IDs import as before
+        - New -Csv. Export: a placement list next to the JSON,
+          Folders_<datacenter>_<timestamp>_placement.csv, one row per object
+          (FolderType, Path, FolderId, ObjectType, Name, Id). Import: a
+          target placement list, <export>_target-<datacenter>.csv, with per
+          exported object the folder path and the ID of that folder on the
+          target vCenter (TargetFolderId), for example to pick the
+          destination folder in HCX. Run it before the migration with
+          -MoveObjects:$false; in a dry run, folders that don't exist yet
+          have no ID
+
     v1.4.0  2026-11-18  Paul van Dieen
         - Progress bar during long steps (#12): "n of N: item", the
           percentage and the time left, in the export while it reads each
@@ -246,6 +277,9 @@ param(
     [switch]$IncludeSystemFolders,
 
     [Parameter(Mandatory = $false)]
+    [switch]$Csv,
+
+    [Parameter(Mandatory = $false)]
     [switch]$MoveObjects,
 
     [Parameter(Mandatory = $false)]
@@ -267,7 +301,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$scriptVersion = '1.4.0'
+$scriptVersion = '1.5.0'
 $scriptAuthor  = 'Paul van Dieen'
 $scriptBlogUrl = 'https://www.hollebollevsan.nl'
 $scriptDir     = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
@@ -1064,15 +1098,23 @@ if ($Mode -eq 'Export') {
                         Show-Progress -Id 2 -ParentId 1 -Activity "Reading $t folders and their permissions" -Index $fNo -Total $fTotal -Item (Format-Path $_.Path)
                         [pscustomobject]@{
                             Path        = @($_.Path)
+                            Id          = $_.MoRef.Value
                             Permissions = (Get-FolderPermissions -MoRef $_.MoRef -RoleNameById $roleNameById)
                         }
                     })
                     Complete-Progress -Id 2
+                    # IDs (#14): the vCenter MoRef of every folder and object, so the
+                    # export also says which object (vm-17) sits in which folder
+                    # (group-v4). Import still matches by type and name.
+                    $folderIdByPath = @{}
+                    foreach ($fo in $tree.Folders) { $folderIdByPath[(Get-PathKey $fo.Path)] = $fo.MoRef.Value }
                     $memberEntries = @($tree.Members | Where-Object { $nameById.ContainsKey($_.MoRef.Value) } | ForEach-Object {
                         [pscustomobject]@{
-                            Name = $nameById[$_.MoRef.Value]
-                            Type = $_.Type
-                            Path = @($_.Path)
+                            Name     = $nameById[$_.MoRef.Value]
+                            Type     = $_.Type
+                            Path     = @($_.Path)
+                            Id       = $_.MoRef.Value
+                            FolderId = $folderIdByPath[(Get-PathKey $_.Path)]
                         }
                     })
                     $permCount = 0
@@ -1097,6 +1139,24 @@ if ($Mode -eq 'Export') {
                 $jsonPath = Join-Path $BackupDirectory "Folders_${safeDc}_$timestamp.json"
                 ConvertTo-Json -InputObject $export -Depth 10 | Set-Content -Path $jsonPath -Encoding UTF8
                 Write-Log "Exported: $jsonPath" -Level SUCCESS
+                if ($Csv) {
+                    # -Csv (#14): one row per object, for a quick look in Excel
+                    $csvPath = Join-Path $BackupDirectory "Folders_${safeDc}_${timestamp}_placement.csv"
+                    $rows = foreach ($tr in $typeResults) {
+                        foreach ($m in @($tr.Members)) {
+                            [pscustomobject]@{
+                                FolderType = $tr.Type
+                                Path       = Format-Path $m.Path
+                                FolderId   = $m.FolderId
+                                ObjectType = $m.Type
+                                Name       = $m.Name
+                                Id         = $m.Id
+                            }
+                        }
+                    }
+                    @($rows) | Sort-Object FolderType, Path, Name | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+                    Write-Log "Placement list: $csvPath ($(@($rows).Count) object(s))" -Level SUCCESS
+                }
                 $exportOk++
             }
             catch {
@@ -1263,6 +1323,7 @@ if ($Mode -eq 'Import') {
                 }
 
                 $typeNo = 0
+                $placementRows = [System.Collections.Generic.List[object]]::new()
                 foreach ($t in $types) {
                     $typeNo++
                     Show-Progress -Id 1 -Activity "Import into datacenter '$($targetDc.Name)'" -Index $typeNo -Total @($types).Count -Item "$t folders"
@@ -1289,6 +1350,27 @@ if ($Mode -eq 'Import') {
                             continue
                         }
                         $null = Resolve-TargetFolder -Path $path -PathMap $pathMap
+                    }
+
+                    # Target placement list (-Csv, #14): per exported object the folder
+                    # on THIS vCenter and its ID, e.g. as the destination folder in HCX
+                    if ($Csv) {
+                        foreach ($m in @($typeData.Members)) {
+                            $path   = ConvertTo-PathArray $m.Path
+                            $key    = Get-PathKey $path
+                            $target = if ($pathMap.ContainsKey($key)) { $pathMap[$key] } else { $null }
+                            $tid    = if ($null -eq $target) { '' } elseif ($target -is [string]) { '' } else { $target.Value }
+                            $note   = if ($null -eq $target) { 'folder missing' } elseif ($target -is [string]) { 'created on a real run' } else { '' }
+                            $placementRows.Add([pscustomobject]@{
+                                FolderType     = $t
+                                ObjectType     = $m.Type
+                                Name           = $m.Name
+                                SourceId       = if ($m.PSObject.Properties.Name -contains 'Id') { $m.Id } else { '' }
+                                Path           = Format-Path $path
+                                TargetFolderId = $tid
+                                Note           = $note
+                            })
+                        }
                     }
 
                     # 2. Move objects
@@ -1431,6 +1513,14 @@ if ($Mode -eq 'Import') {
 
                 Complete-Progress -Id 2
                 Complete-Progress -Id 1
+
+                if ($Csv) {
+                    $safeTarget = $targetDc.Name -replace '[\\/:*?"<>|]', '_'
+                    $csvPath    = Join-Path $BackupDirectory ("{0}_target-{1}.csv" -f [System.IO.Path]::GetFileNameWithoutExtension($fileChoice.Name), $safeTarget)
+                    @($placementRows) | Sort-Object FolderType, Path, Name | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+                    Write-Log "Target placement list: $csvPath ($($placementRows.Count) object(s); TargetFolderId is the folder ID on $vCenterServer)" -Level SUCCESS
+                    if ($DryRun) { Write-Log 'Dry run: folders that do not exist yet have no TargetFolderId; run the import without -DryRun (with -MoveObjects:$false) to get them.' -Level WARNING }
+                }
 
                 # Summaries (#10): red with failures, yellow with only skips, green otherwise.
                 # Objects not found in the target are normal during a migration (not moved

@@ -4,7 +4,7 @@ A PowerShell utility to export and import vCenter inventory folder structures (V
 
 | Script | Version | Purpose |
 |---|---|---|
-| `Invoke-VIFolderManager.ps1` | 1.4.0 | Export / import vCenter folder trees. Lab-tested on VCF 9.1.1 and 9.0.2, and from vCenter 8.0 U3 to 9.1.1 |
+| `Invoke-VIFolderManager.ps1` | 1.5.0 | Export / import vCenter folder trees. Lab-tested on VCF 9.1.1 and 9.0.2, and from vCenter 8.0 U3 to 9.1.1 |
 | `tests/New-VIFolderTestSet.ps1` | 1.1.1 | Builds, scrambles and removes a throwaway test set in a **lab** vCenter |
 
 > **Status: lab-tested.** VIFolderManager has been lab-tested on VCF 9.1.1 and 9.0.2 management vCenters only. It has not yet been used in a production migration. Exporting from a vCenter 8.0 U3 source into 9.1.1 has been lab-tested (folders and permissions, on a vCenter 8 without hosts, so no VM moves); a 7.x source has not. Try it in a lab first, always run an import with `-DryRun` before the real one, and check the log. Use it at your own risk; feedback and issues are welcome.
@@ -69,6 +69,27 @@ What Import does, per folder type:
 
 There is deliberately **no Delete mode**: destroying a vSphere folder also destroys everything inside it, VMs included.
 
+### Placement lists and the HCX destination folder
+
+From 1.5.0 the export holds the vCenter ID of every folder and object (`Id`, for example `group-v4` and `vm-17`), and every object the ID of its folder (`FolderId`). Import still matches by type and name, so these IDs change nothing there; older exports without IDs import as before.
+
+Add `-Csv` to get the same as a list you can open in Excel:
+
+| Mode | File | One row per object |
+|---|---|---|
+| Export | `Folders_<datacenter>_<timestamp>_placement.csv` | `FolderType`, `Path`, `FolderId`, `ObjectType`, `Name`, `Id` (source vCenter) |
+| Import | `<export>_target-<datacenter>.csv` | `FolderType`, `ObjectType`, `Name`, `SourceId`, `Path`, `TargetFolderId` (**target** vCenter), `Note` |
+
+The import list is the one for an HCX migration: it tells you per VM which folder it belongs in on the new vCenter, and that folder's ID there. Run the import **before** the wave with `-MoveObjects:$false`, so the folders exist on the target and have an ID; in a dry run, folders that don't exist yet are listed with *"created on a real run"* and no ID.
+
+```powershell
+.\Invoke-VIFolderManager.ps1 -vCenterServer vc02.vcf.lab -Mode Import -FolderType VM -MoveObjects:$false -ApplyPermissions:$false -Csv
+```
+
+In HCX, pick that folder as the destination folder of the VM in the Mobility Group. With HCX PowerCLI, `New-HCXMigration -Folder` takes an HCX folder container: `Get-HCXContainer -Type Folder -Site <destination>` lists them by name (two folders with the same name are ambiguous), and `Get-HCXContainer -Uid` picks one by its HCX ID. Whether that HCX ID equals the vCenter folder ID in `TargetFolderId` is **not verified** yet; compare them once with `Get-HCXContainer -Type Folder -Site <destination> | Select-Object Name, Uid` before you script on it.
+
+After the wave, the same import with `-MoveObjects` puts any VM that landed elsewhere into its folder.
+
 ## Requirements
 
 | Requirement | Notes |
@@ -119,6 +140,7 @@ From a scheduled task or another script, start it with `pwsh -Command` rather th
 | `-vCenterServer` | FQDN or IP of the vCenter Server (required) |
 | `-Mode` | `Export` or `Import`; menu when omitted |
 | `-IncludeSystemFolders` | Export: also export the system folders listed above |
+| `-Csv` | Export: placement list with folder and object IDs. Import: target placement list with the folder ID on the target vCenter (see Placement lists) |
 | `-FolderType` | `VM`, `Host`, `Datastore`, `Network` (one or more); menu when omitted |
 | `-BackupDirectory` | Where JSON files are written and read. Default: `Backups\` next to the script. Asked after the mode when omitted (Enter, B for the folder browser, or a path), except in an unattended run |
 | `-Datacenter` | Export: datacenter names or wildcards instead of the picker. Import: the exact target datacenter. An unknown name stops the script with the list |

@@ -4,7 +4,7 @@ A PowerShell utility to export and import vCenter inventory folder structures (V
 
 | Script | Version | Purpose |
 |---|---|---|
-| `Invoke-VIFolderManager.ps1` | 1.3.0 | Export / import vCenter folder trees. Lab-tested on VCF 9.1.1 and 9.0.2, and from vCenter 8.0 U3 to 9.1.1 |
+| `Invoke-VIFolderManager.ps1` | 1.4.0 | Export / import vCenter folder trees. Lab-tested on VCF 9.1.1 and 9.0.2, and from vCenter 8.0 U3 to 9.1.1 |
 | `tests/New-VIFolderTestSet.ps1` | 1.1.1 | Builds, scrambles and removes a throwaway test set in a **lab** vCenter |
 
 > **Status: lab-tested.** VIFolderManager has been lab-tested on VCF 9.1.1 and 9.0.2 management vCenters only. It has not yet been used in a production migration. Exporting from a vCenter 8.0 U3 source into 9.1.1 has been lab-tested (folders and permissions, on a vCenter 8 without hosts, so no VM moves); a 7.x source has not. Try it in a lab first, always run an import with `-DryRun` before the real one, and check the log. Use it at your own risk; feedback and issues are welcome.
@@ -13,7 +13,7 @@ A PowerShell utility to export and import vCenter inventory folder structures (V
 
 ## How it works
 
-The script connects to a vCenter, then runs one of two modes. Pass `-Mode Export|Import`, or leave it out to pick from a menu. Pass `-FolderType VM,Host,Datastore,Network` (any combination), or leave it out to pick from a menu. Every picker accepts single numbers, comma-separated lists, ranges (`2-6`), combinations (`1,3-5,8`), `all`, and `cancel` (or `exit`, `quit`, `q`). The datacenter picker and the export-file picker also filter by name: a wildcard (`*DC01*`) or `/text` for a substring narrows and renumbers the list, `reset` clears it, `list` shows everything; above 50 items the picker asks for a filter instead of printing the whole list. Every action is logged to the console and a timestamped log file.
+The script connects to a vCenter, then runs one of two modes. Pass `-Mode Export|Import`, or leave it out to pick from a menu. Pass `-FolderType VM,Host,Datastore,Network` (any combination), or leave it out to pick from a menu. Every picker accepts single numbers, comma-separated lists, ranges (`2-6`), combinations (`1,3-5,8`), `all`, and `cancel` (or `exit`, `quit`, `q`). The datacenter picker and the export-file picker also filter by name: a wildcard (`*DC01*`) or `/text` for a substring narrows and renumbers the list, `reset` clears it, `list` shows everything; above 50 items the picker asks for a filter instead of printing the whole list. Every action is logged to the console and a timestamped log file. Long steps show a progress bar with "n of N: item", the percentage and the time left; it disappears when the step ends.
 
 **Backup directory.** Without `-BackupDirectory`, an interactive run asks for it right after the mode: **Enter** keeps the default `Backups\` next to the script, **B** opens the Windows folder browser (only where a GUI is available), or type a path. Import shows how many exports the folder holds and asks again when it holds none. An unattended run (`-Datacenter` on Export, `-ExportFile` on Import) doesn't ask.
 

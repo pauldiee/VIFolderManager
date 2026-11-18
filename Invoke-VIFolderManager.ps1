@@ -130,7 +130,7 @@
 
 .NOTES
     Script   : Invoke-VIFolderManager.ps1
-    Version  : 1.3.0
+    Version  : 1.4.0
     Author   : Paul van Dieen
     Blog     : https://www.hollebollevsan.nl
     Requires : PowerShell 7.4+, VCF.PowerCLI 9.0+ (or VMware.PowerCLI 13+)
@@ -139,6 +139,14 @@
 #>
 
 <# CHANGELOG
+    v1.4.0  2026-11-18  Paul van Dieen
+        - Progress bar during long steps (#12): "n of N: item", the
+          percentage and the time left, in the export while it reads each
+          folder and its permissions (per datacenter and folder type), and
+          the import while it creates folders, moves objects and sets
+          permissions. Updated at most every 250 ms; the bar disappears when
+          the step ends. The log file is unchanged
+
     v1.3.0  2026-11-18  Paul van Dieen
         - On par with VDSPortGroupManager 1.6.1 (#10)
         - Pick the backup directory interactively: without -BackupDirectory,
@@ -259,7 +267,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$scriptVersion = '1.3.0'
+$scriptVersion = '1.4.0'
 $scriptAuthor  = 'Paul van Dieen'
 $scriptBlogUrl = 'https://www.hollebollevsan.nl'
 $scriptDir     = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
@@ -416,6 +424,49 @@ function Write-RunSummary {
         Write-Log "  Failed ($($mine.Count)):" -Level ERROR
         foreach ($f in $mine) { Write-Log "    - $($f.Name): $($f.Reason)" -Level ERROR }
     }
+}
+
+# --- Progress (#12) -------------------------------------------------------------
+# A progress bar per long step: "12 of 637: name", percentage and time left.
+# Updated at most every 250 ms, so thousands of items don't slow the run down;
+# Complete-Progress removes the bar. Id 1 is the outer step, Id 2 the items
+# inside it. The log file is unchanged.
+$script:ProgressState = @{}
+function Show-Progress {
+    param(
+        [Parameter(Mandatory = $true)][string]$Activity,
+        [Parameter(Mandatory = $true)][int]$Index,
+        [Parameter(Mandatory = $true)][int]$Total,
+        [string]$Item = '',
+        [int]$Id = 1,
+        [int]$ParentId = -1
+    )
+    if ($Total -le 0) { return }
+    $now = [DateTime]::UtcNow
+    if (-not $script:ProgressState.ContainsKey($Id) -or $Index -le 1) {
+        $script:ProgressState[$Id] = @{ Start = $now; Last = [DateTime]::MinValue }
+    }
+    $st = $script:ProgressState[$Id]
+    if ($Index -gt 1 -and $Index -lt $Total -and ($now - $st.Last).TotalMilliseconds -lt 250) { return }
+    $st.Last = $now
+    $p = @{
+        Id              = $Id
+        Activity        = $Activity
+        Status          = "$Index of $Total$(if ($Item) { ": $Item" })"
+        PercentComplete = [Math]::Min(100, [int](100 * ($Index - 1) / $Total))
+    }
+    if ($Index -gt 1) {
+        $perItem = ($now - $st.Start).TotalSeconds / ($Index - 1)
+        $p.SecondsRemaining = [int]($perItem * ($Total - $Index + 1))
+    }
+    if ($ParentId -ge 0) { $p.ParentId = $ParentId }
+    Write-Progress @p
+}
+
+function Complete-Progress {
+    param([int]$Id = 1)
+    $null = $script:ProgressState.Remove($Id)
+    Write-Progress -Id $Id -Activity 'Done' -Completed
 }
 
 # --- Menu Functions -------------------------------------------------------------
@@ -982,13 +1033,18 @@ if ($Mode -eq 'Export') {
         $roleNameById = @{}
         foreach ($r in $authManager.RoleList) { $roleNameById[[int]$r.RoleId] = $r.Name }
 
+        $dcNo = 0
         foreach ($dcChoice in $dcChoices) {
             $dcView = $dcChoice.Item
+            $dcNo++
             Write-Log "Exporting datacenter '$($dcView.Name)' (folder types: $($types -join ', ')) ..."
             try {
                 $index       = Get-FolderIndex -DatacenterView $dcView
                 $typeResults = @()
+                $typeNo      = 0
                 foreach ($t in $types) {
+                    $typeNo++
+                    Show-Progress -Id 1 -Activity "Export of datacenter '$($dcView.Name)' ($dcNo of $(@($dcChoices).Count))" -Index $typeNo -Total @($types).Count -Item "$t folders"
                     $rootRef = $dcView.($folderTypeMap[$t].RootProperty)
                     $tree    = Get-FolderTree -RootMoRef $rootRef -Index $index -Type $t -SkipSystemFolders:(-not $IncludeSystemFolders)
 
@@ -1001,12 +1057,17 @@ if ($Mode -eq 'Export') {
                         }
                     }
 
+                    # One permission call per folder: the slow part with hundreds of folders
+                    $fNo = 0; $fTotal = $tree.Folders.Count
                     $folderEntries = @($tree.Folders | ForEach-Object {
+                        $fNo++
+                        Show-Progress -Id 2 -ParentId 1 -Activity "Reading $t folders and their permissions" -Index $fNo -Total $fTotal -Item (Format-Path $_.Path)
                         [pscustomobject]@{
                             Path        = @($_.Path)
                             Permissions = (Get-FolderPermissions -MoRef $_.MoRef -RoleNameById $roleNameById)
                         }
                     })
+                    Complete-Progress -Id 2
                     $memberEntries = @($tree.Members | Where-Object { $nameById.ContainsKey($_.MoRef.Value) } | ForEach-Object {
                         [pscustomobject]@{
                             Name = $nameById[$_.MoRef.Value]
@@ -1041,6 +1102,8 @@ if ($Mode -eq 'Export') {
             catch {
                 Add-RunFailure -Action 'Export' -Name $dcView.Name -Reason (Get-FailReason $_)
             }
+            Complete-Progress -Id 2
+            Complete-Progress -Id 1
         }
         $exportFail = @($script:RunFailures | Where-Object { $_.Action -eq 'Export' }).Count
         Write-RunSummary -Line "Export complete: $exportOk datacenter(s) exported, $exportFail failed." -Failed $exportFail -Actions 'Export'
@@ -1199,7 +1262,10 @@ if ($Mode -eq 'Import') {
                     return $current
                 }
 
+                $typeNo = 0
                 foreach ($t in $types) {
+                    $typeNo++
+                    Show-Progress -Id 1 -Activity "Import into datacenter '$($targetDc.Name)'" -Index $typeNo -Total @($types).Count -Item "$t folders"
                     $typeData = @($data.FolderTypes | Where-Object { $_.Type -eq $t })[0]
                     Write-Log "--- $t folders ---"
 
@@ -1211,8 +1277,11 @@ if ($Mode -eq 'Import') {
 
                     # 1. Folders (parents first)
                     $folderEntries = @($typeData.Folders | Sort-Object { (ConvertTo-PathArray $_.Path).Count })
+                    $fNo = 0
                     foreach ($f in $folderEntries) {
+                        $fNo++
                         $path = ConvertTo-PathArray $f.Path
+                        Show-Progress -Id 2 -ParentId 1 -Activity "$t folders" -Index $fNo -Total $folderEntries.Count -Item (Format-Path $path)
                         if ($path.Count -eq 0) { continue }
                         if ($pathMap.ContainsKey((Get-PathKey $path))) {
                             $stats.Existing++
@@ -1234,7 +1303,11 @@ if ($Mode -eq 'Import') {
                                 $objIndex[$k].Add($v)
                             }
                         }
-                        foreach ($m in @($typeData.Members)) {
+                        $members = @($typeData.Members)
+                        $mNo = 0
+                        foreach ($m in $members) {
+                            $mNo++
+                            Show-Progress -Id 2 -ParentId 1 -Activity "Moving objects into their $t folders" -Index $mNo -Total $members.Count -Item $m.Name
                             $path = ConvertTo-PathArray $m.Path
                             $k    = "$($m.Type)|$($m.Name)"
                             if (-not $objIndex.ContainsKey($k)) {
@@ -1293,7 +1366,10 @@ if ($Mode -eq 'Import') {
 
                     # 3. Permissions
                     if ($ApplyPermissions) {
+                        $pNo = 0
                         foreach ($f in $folderEntries) {
+                            $pNo++
+                            Show-Progress -Id 2 -ParentId 1 -Activity "Permissions on $t folders" -Index $pNo -Total $folderEntries.Count -Item (Format-Path (ConvertTo-PathArray $f.Path))
                             $perms = @($f.Permissions | Where-Object { $null -ne $_ })
                             if ($perms.Count -eq 0) { continue }
                             $path   = ConvertTo-PathArray $f.Path
@@ -1352,6 +1428,9 @@ if ($Mode -eq 'Import') {
                         }
                     }
                 }
+
+                Complete-Progress -Id 2
+                Complete-Progress -Id 1
 
                 # Summaries (#10): red with failures, yellow with only skips, green otherwise.
                 # Objects not found in the target are normal during a migration (not moved

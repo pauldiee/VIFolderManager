@@ -4,7 +4,7 @@ A PowerShell utility to export and import vCenter inventory folder structures (V
 
 | Script | Version | Purpose |
 |---|---|---|
-| `Invoke-VIFolderManager.ps1` | 1.5.1 | Export / import vCenter folder trees. Lab-tested on VCF 9.1.1 and 9.0.2, and from vCenter 8.0 U3 to 9.1.1 |
+| `Invoke-VIFolderManager.ps1` | 1.6.0 | Export / import vCenter folder trees. Lab-tested on VCF 9.1.1 and 9.0.2, and from vCenter 8.0 U3 to 9.1.1 |
 | `tests/New-VIFolderTestSet.ps1` | 1.1.1 | Builds, scrambles and removes a throwaway test set in a **lab** vCenter |
 | `tests/New-VIFolderScaleSet.ps1` | 0.1.0 | Builds and removes a large folder set (default 5000 folders, 500 permissions) in a **lab** vCenter |
 
@@ -149,10 +149,19 @@ From a scheduled task or another script, start it with `pwsh -Command` rather th
 | `-LogDirectory` | Default: `Logs\` next to the script |
 | `-MoveObjects` | Import: move same-named objects into their folder; asked when omitted |
 | `-ApplyPermissions` | Import: re-apply folder permissions; asked when omitted |
+| `-Report` | Export: also write an HTML report next to the JSON (see Visual report) |
 | `-DryRun` | Import: show what would change, change nothing |
 | `-CredentialPath` | Default: `<vCenterServer>.cred` next to the script |
 | `-ResetCredentials` | Prompt for new credentials |
 | `-SkipCertificateValidation` | Accept self-signed certificates (lab use) |
+
+## Visual report
+
+Add `-Report` to an export to get an HTML file next to the JSON (same name, `.html`). It shows what the export holds: the folder tree per folder type, which objects sit in which folder, and the permissions on each folder. It's the [VI Export Viewer](https://github.com/pauldiee/VIExportViewer) (`report/viewer.html`) with the export embedded: one file that opens offline in any browser, loads nothing from the internet and uploads nothing. **Print / PDF** gives a clean printout for the migration file. The look follows the ITQ house style, without logos.
+
+Drop a second export on the open report (for example the same export from the target vCenter) and switch to **Compare**: every item is marked as missing on the target, different, only on the target, or the same. The older export is the source; **Swap** turns it round.
+
+The report holds the full export, names included. Keep it where you keep the export files; `Backups/` is git-ignored.
 
 ## Testing in a lab
 

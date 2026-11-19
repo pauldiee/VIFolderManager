@@ -146,15 +146,34 @@
 
 .NOTES
     Script   : Invoke-VIFolderManager.ps1
-    Version  : 1.5.0
+    Version  : 1.5.1
     Author   : Paul van Dieen
     Blog     : https://www.hollebollevsan.nl
     Requires : PowerShell 7.4+, VCF.PowerCLI 9.0+ (or VMware.PowerCLI 13+)
     Tested   : VCF 9.1.1 and VCF 9.0.2 management vCenters (Holodeck lab,
-               2026-11-12), incl. import across the two vCenters
+               2026-11-12), incl. import across the two vCenters. Scale,
+               2026-11-19 on 9.1.1: 5000 folders, 500 permissions
+               (tests/New-VIFolderScaleSet.ps1, tests/TESTPLAN.md)
 #>
 
 <# CHANGELOG
+    v1.5.1  2026-11-19  Paul van Dieen
+        - Scale (#16), measured on VCF 9.1.1 with 5000 folders and 500
+          permissions: export from 2:11 to 3 s, import -DryRun from 29 to
+          6 s, real import into an empty datacenter from 7:01 to 4:46.
+          Exports identical to 1.5.0.
+        - Folder permissions are read with one RetrieveAllPermissions call
+          instead of one call per folder (export and import). That call
+          leaves out the datacenter's hidden root folders (vm, host,
+          datastore, network; the Supervisor's wcp-* permissions sit
+          there), so those four are still read per folder. When the call
+          fails, every folder is read per folder as before.
+        - The log file is written through one open writer, flushed per
+          line, instead of Add-Content per line (2.5 ms each)
+        - Import fetches each parent folder once when it creates folders
+        - Log lines per folder type with the folder counts (some consoles
+          show no progress bar)
+
     v1.5.0  2026-11-18  Paul van Dieen
         - IDs in the export (#14): every folder and object gets its vCenter
           ID (Id, for example group-v4 and vm-17), and every object the ID of
@@ -301,7 +320,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$scriptVersion = '1.5.0'
+$scriptVersion = '1.5.1'
 $scriptAuthor  = 'Paul van Dieen'
 $scriptBlogUrl = 'https://www.hollebollevsan.nl'
 $scriptDir     = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
@@ -402,6 +421,8 @@ if (-not (Test-Path -Path $LogDirectory)) {
 $timestamp = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
 $LogFile   = Join-Path $LogDirectory "VIFolderManager_$timestamp.log"
 
+$script:LogWriter = $null
+
 function Write-Log {
     param(
         [Parameter(Mandatory = $true)]
@@ -414,7 +435,17 @@ function Write-Log {
     )
     $ts    = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $entry = "[$ts] [$Level] $Message"
-    Add-Content -Path $LogFile -Value $entry
+    # One open writer for the whole run, flushed per line (#16): Add-Content
+    # opens the file for every line, 2.5 ms each (7 s for 3000 folders).
+    # Shared for reading and deleting, so the file can be tailed or removed
+    # while a session still holds it.
+    if ($null -eq $script:LogWriter) {
+        $fs = [System.IO.FileStream]::new($LogFile, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete)
+        $script:LogWriter = [System.IO.StreamWriter]::new($fs, [System.Text.UTF8Encoding]::new($false))
+        $script:LogWriter.AutoFlush = $true
+    }
+    $script:LogWriter.WriteLine($entry)
     if ($FileOnly) { return }
     switch ($Level) {
         'SUCCESS' { Write-Host "  $entry" -ForegroundColor Green  }
@@ -1015,15 +1046,42 @@ function Get-FolderTree {
     return [pscustomobject]@{ Folders = $folders; Members = $members }
 }
 
+function Get-PermissionIndex {
+    # Every permission defined in vCenter, in one call, keyed by entity MoRef
+    # value (#16): one RetrieveEntityPermissions call per folder took 78 s
+    # for 3000 folders in the lab. $null when the call fails; the export then
+    # reads per folder as before. RetrieveAllPermissions leaves out the
+    # datacenter's hidden root folders (vm, host, datastore, network; seen on
+    # 9.1.1 with the Supervisor's wcp-* permissions there), so those are
+    # always read per folder (-Direct).
+    try {
+        $byEntity = @{}
+        foreach ($p in @($authManager.RetrieveAllPermissions())) {
+            if ($null -eq $p -or $null -eq $p.Entity) { continue }
+            $k = $p.Entity.Value
+            if (-not $byEntity.ContainsKey($k)) { $byEntity[$k] = New-Object System.Collections.Generic.List[object] }
+            $byEntity[$k].Add($p)
+        }
+        return ,$byEntity
+    } catch {
+        Write-Log "Could not read all permissions in one call ($(Get-ErrorDetail $_)); reading them per folder instead (slower)." -Level WARNING
+        return $null
+    }
+}
+
 function Get-FolderPermissions {
     # Permissions defined directly on the folder (not inherited)
-    param([Parameter(Mandatory = $true)]$MoRef, [Parameter(Mandatory = $true)]$RoleNameById)
+    param([Parameter(Mandatory = $true)]$MoRef, [Parameter(Mandatory = $true)]$RoleNameById, $PermissionIndex = $null, [switch]$Direct)
     $result = @()
-    try {
-        $perms = @($authManager.RetrieveEntityPermissions($MoRef, $false))
-    } catch {
-        Write-Log "Could not read permissions of folder $($MoRef.Value): $(Get-ErrorDetail $_)" -Level WARNING
-        return ,@()
+    if ($null -ne $PermissionIndex -and -not $Direct) {
+        $perms = if ($PermissionIndex.ContainsKey($MoRef.Value)) { $PermissionIndex[$MoRef.Value].ToArray() } else { @() }
+    } else {
+        try {
+            $perms = @($authManager.RetrieveEntityPermissions($MoRef, $false))
+        } catch {
+            Write-Log "Could not read permissions of folder $($MoRef.Value): $(Get-ErrorDetail $_)" -Level WARNING
+            return ,@()
+        }
     }
     foreach ($p in $perms) {
         if ($null -eq $p) { continue }
@@ -1066,6 +1124,7 @@ if ($Mode -eq 'Export') {
         }
         $roleNameById = @{}
         foreach ($r in $authManager.RoleList) { $roleNameById[[int]$r.RoleId] = $r.Name }
+        $permIndex = Get-PermissionIndex
 
         $dcNo = 0
         foreach ($dcChoice in $dcChoices) {
@@ -1091,15 +1150,18 @@ if ($Mode -eq 'Export') {
                         }
                     }
 
-                    # One permission call per folder: the slow part with hundreds of folders
+                    # Permissions from the index read once above; per folder only
+                    # when that failed. Also a log line: some consoles show no
+                    # progress bar (#16)
                     $fNo = 0; $fTotal = $tree.Folders.Count
+                    Write-Log "  $t`: $fTotal folder(s), reading their permissions ..."
                     $folderEntries = @($tree.Folders | ForEach-Object {
                         $fNo++
                         Show-Progress -Id 2 -ParentId 1 -Activity "Reading $t folders and their permissions" -Index $fNo -Total $fTotal -Item (Format-Path $_.Path)
                         [pscustomobject]@{
                             Path        = @($_.Path)
                             Id          = $_.MoRef.Value
-                            Permissions = (Get-FolderPermissions -MoRef $_.MoRef -RoleNameById $roleNameById)
+                            Permissions = (Get-FolderPermissions -MoRef $_.MoRef -RoleNameById $roleNameById -PermissionIndex $permIndex -Direct:(@($_.Path).Count -eq 0))
                         }
                     })
                     Complete-Progress -Id 2
@@ -1283,6 +1345,9 @@ if ($Mode -eq 'Import') {
                 foreach ($r in $authManager.RoleList) { $roleIdByName[$r.Name] = [int]$r.RoleId }
 
                 $targetIndex = Get-FolderIndex -DatacenterView $targetDc
+                # Parent folder views, fetched once per parent instead of once per
+                # new child folder (#16)
+                $parentViews = @{}
 
                 function Resolve-TargetFolder {
                     # Returns the MoRef of the folder at $Path, creating missing
@@ -1306,7 +1371,10 @@ if ($Mode -eq 'Import') {
                             continue
                         }
                         try {
-                            $parentView = Get-View -Server $viConn -Id $current -Property Name
+                            if (-not $parentViews.ContainsKey($current.Value)) {
+                                $parentViews[$current.Value] = Get-View -Server $viConn -Id $current -Property Name
+                            }
+                            $parentView = $parentViews[$current.Value]
                             $newRef     = $parentView.CreateFolder([string]$Path[$i])
                             Write-Log "Created folder $(Format-Path $prefix)" -Level SUCCESS
                             $stats.Created++
@@ -1338,6 +1406,7 @@ if ($Mode -eq 'Import') {
 
                     # 1. Folders (parents first)
                     $folderEntries = @($typeData.Folders | Sort-Object { (ConvertTo-PathArray $_.Path).Count })
+                    Write-Log "  $($folderEntries.Count) folder(s) in the export, $($existing.Folders.Count) in the target ..."
                     $fNo = 0
                     foreach ($f in $folderEntries) {
                         $fNo++
@@ -1448,6 +1517,9 @@ if ($Mode -eq 'Import') {
 
                     # 3. Permissions
                     if ($ApplyPermissions) {
+                        # Current permissions of the target folders in one call (#16);
+                        # per folder when that fails
+                        $permIndex = Get-PermissionIndex
                         $pNo = 0
                         foreach ($f in $folderEntries) {
                             $pNo++
@@ -1471,7 +1543,11 @@ if ($Mode -eq 'Import') {
                             }
                             $current = @()
                             if ($target -isnot [string]) {
-                                try { $current = @($authManager.RetrieveEntityPermissions($target, $false)) } catch { $current = @() }
+                                if ($null -ne $permIndex) {
+                                    $current = if ($permIndex.ContainsKey($target.Value)) { $permIndex[$target.Value].ToArray() } else { @() }
+                                } else {
+                                    try { $current = @($authManager.RetrieveEntityPermissions($target, $false)) } catch { $current = @() }
+                                }
                             }
                             foreach ($p in $perms) {
                                 $label = "$($p.Principal) as '$($p.Role)' on $(Format-Path $path)"
@@ -1551,7 +1627,9 @@ Disconnect-VIServer -Server $viConn -Confirm:$false
 if ($script:RunFailures.Count -gt 0) {
     Write-Log "===== Script finished with $($script:RunFailures.Count) failure(s); see the summary above =====" -Level ERROR
     Write-Host "`n  Log file: $LogFile`n" -ForegroundColor DarkGray
+    $script:LogWriter.Dispose()
     exit 1
 }
 Write-Log '===== Script finished =====' -Level SUCCESS
 Write-Host "`n  Log file: $LogFile`n" -ForegroundColor DarkGray
+$script:LogWriter.Dispose()

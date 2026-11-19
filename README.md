@@ -4,8 +4,9 @@ A PowerShell utility to export and import vCenter inventory folder structures (V
 
 | Script | Version | Purpose |
 |---|---|---|
-| `Invoke-VIFolderManager.ps1` | 1.5.0 | Export / import vCenter folder trees. Lab-tested on VCF 9.1.1 and 9.0.2, and from vCenter 8.0 U3 to 9.1.1 |
+| `Invoke-VIFolderManager.ps1` | 1.5.1 | Export / import vCenter folder trees. Lab-tested on VCF 9.1.1 and 9.0.2, and from vCenter 8.0 U3 to 9.1.1 |
 | `tests/New-VIFolderTestSet.ps1` | 1.1.1 | Builds, scrambles and removes a throwaway test set in a **lab** vCenter |
+| `tests/New-VIFolderScaleSet.ps1` | 0.1.0 | Builds and removes a large folder set (default 5000 folders, 500 permissions) in a **lab** vCenter |
 
 > **Status: lab-tested.** VIFolderManager has been lab-tested on VCF 9.1.1 and 9.0.2 management vCenters only. It has not yet been used in a production migration. Exporting from a vCenter 8.0 U3 source into 9.1.1 has been lab-tested (folders and permissions, on a vCenter 8 without hosts, so no VM moves); a 7.x source has not. Try it in a lab first, always run an import with `-DryRun` before the real one, and check the log. Use it at your own risk; feedback and issues are welcome.
 
@@ -158,6 +159,10 @@ From a scheduled task or another script, start it with `pwsh -Command` rather th
 `tests/New-VIFolderTestSet.ps1` builds a test set in a **lab** vCenter (`-Mode Create`): a `VIFM-Test` folder tree in all four folder types, tiny dummy VMs and a template (no disk, no NIC, never powered on), a same-named VM pair in two folders, optionally an empty second datacenter (`-WithSecondDatacenter`) and test permissions (`-TestPrincipal`, a dedicated SSO test user you create first). `-Mode Scramble` moves the VMs out and removes folders and permissions, so an Import has something to restore; `-Mode Remove` cleans up. It only touches objects it created (marker note, `VIFM-` names).
 
 Suggested run: Create, Export, Scramble, Import `-DryRun`, Import, Import again (everything should be "already present"), compare a new export with the first one, Remove.
+
+`tests/New-VIFolderScaleSet.ps1` builds a large set for scale tests: a `VIFM-S` tree in all four folder types (default 5000 folders, up to six levels, names that repeat across branches), 500 folder permissions for `-TestPrincipal` with the built-in ReadOnly role, and with `-WithTargetDatacenter` an empty datacenter `VIFM-S-DC2` to import into. `-Mode Remove` deletes it again. Test cases and measured durations are in `tests/TESTPLAN.md`.
+
+Scale (VCF 9.1.1, 2026-11-19, 5000 folders and 500 permissions): export 3 s, import `-DryRun` 6 s, a real import into an empty datacenter 4:46 (5008 folders and 500 permissions, identical to the source).
 
 On a vCenter without hosts, `-FoldersOnly` builds the folders and permissions without the dummy VMs. The tree also has a second `Web` under `Test` (same name as `Prod\Web`) and a folder with non-ASCII characters (`Café Ø ü`).
 

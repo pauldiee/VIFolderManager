@@ -175,7 +175,7 @@ Lab findings (vCenter 8.0.3 build 25600417 to 9.1.1 build 25784172, 2026-11-16, 
 Lab findings (Holodeck, VCF 9.1.1 and 9.0.2, 2026-11-12):
 
 - Use a dedicated test user for `-TestPrincipal`, never a group your admin account is in: a permission set directly on a folder overrides inherited ones for that principal.
-- On VCF 9.1.1 a custom role gets an extra permission on the vCenter root for a principal `VSPHERE.LOCAL\vcf_reserved_<n>`, so `-Mode Remove` may report the test role as still in use. The script leaves that permission alone.
+- On VCF 9.1.1 a custom role gets an extra permission on the vCenter root for a principal `VSPHERE.LOCAL\vcf_reserved_<n>`, so `-Mode Remove` may report the test role as still in use. The script leaves that permission alone. Deleting the role yourself does work (lab-verified 2026-11-19, see VIRoleManager's README): the vSphere Client's *Delete role* with *remove permissions*, or `RemoveAuthorizationRole(<roleId>, $false)`, removes the role together with its own `vcf_reserved_<roleId>` permission.
 - `VMware.vSphere.SsoAdmin` 1.4.0 could not connect from PowerShell 7.6 with VCF.PowerCLI 9.1.1 installed (missing `VMware.System.Private.ServiceModel` type), so the test user was created in the vSphere Client.
 
 ## Credentials

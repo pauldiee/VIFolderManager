@@ -20,7 +20,7 @@ account is in.
 | Script | What it builds | Remove |
 |---|---|---|
 | `New-VIFolderTestSet.ps1` | Functional set: `VIFM-Test` tree in all four folder types, dummy VMs and a template, a same-named VM pair, `Web` twice, a non-ASCII folder name, optional permissions (`-TestPrincipal`) and an empty `VIFM-DC2` (`-WithSecondDatacenter`). `-FoldersOnly` on a vCenter without hosts. `-Mode Scramble` moves the VMs out and removes folders and permissions | `-Mode Remove` |
-| `New-VIFolderScaleSet.ps1` | Scale set: `VIFM-S` trees with `-FolderCount` folders (default 5000: 60% VM, 10% Host, 15% Datastore, 15% Network; five children per folder, up to six levels, names repeat across branches), `-PermissionCount` ReadOnly permissions for `-TestPrincipal` (default 500, half propagating), and with `-WithTargetDatacenter` an empty `VIFM-S-DC2` | `-Mode Remove` (only trees and a DC2 that hold nothing but folders) |
+| `New-VIFolderScaleSet.ps1` | Scale set (0.2.0): `VIFM-S` trees with `-FolderCount` folders (default 5000: 60% VM, 10% Host, 15% Datastore, 15% Network; five children per folder, up to six levels, names repeat across branches), `-PermissionCount` ReadOnly permissions for `-TestPrincipal` (default 500, half propagating), and with `-WithTargetDatacenter` an empty `VIFM-S-DC2`; `-VMCount` dummy VMs spread over the VM tree, `-Mode Scramble` moves them to the root VM folder | `-Mode Remove` (marked VMs first, then trees and a DC2 that hold nothing but folders) |
 
 ## Test cases
 
@@ -45,6 +45,7 @@ that finds everything takes about 4 minutes).
 | S3 | Real import into the empty `VIFM-S-DC2`, `-MoveObjects:$false -ApplyPermissions` | 5008 folders created, 500 permissions set, 0 failed | 1.5.1 before the parent-view cache: 7:01. **1.5.1: 4:46** |
 | S4 | Export `VIFM-S-DC2`, compare paths and permissions of the `VIFM-S` trees with the source export | 0 differences | **pass** (5004 entries each) |
 | S5 | Remove | All `VIFM-S` trees and `VIFM-S-DC2` gone | **pass** |
+| S6 | Create with `-VMCount 200`, Export, Scramble, Import `-MoveObjects -DryRun`, Import `-MoveObjects` | 200 VMs back in their folders; duration and progress noted | not run yet (the set itself: Create with 10 VMs, Scramble and Remove checked on LA, 2026-11-19) |
 
 Findings that shaped 1.5.1:
 
@@ -60,5 +61,4 @@ Findings that shaped 1.5.1:
 
 - Scale not yet run on LB (9.0.2) or L8 (8.0.3): `RetrieveAllPermissions`
   is only compared with the per-folder read on 9.1.1.
-- Scale with VMs to move (`-MoveObjects`) is not covered: the scale set has
-  folders only.
+- S6: the `-MoveObjects` run at scale (the scale set has the VMs since 0.2.0).

@@ -6,7 +6,7 @@ A PowerShell utility to export and import vCenter inventory folder structures (V
 |---|---|---|
 | `Invoke-VIFolderManager.ps1` | 1.6.0 | Export / import vCenter folder trees. Lab-tested on VCF 9.1.1 and 9.0.2, and from vCenter 8.0 U3 to 9.1.1 |
 | `tests/New-VIFolderTestSet.ps1` | 1.1.1 | Builds, scrambles and removes a throwaway test set in a **lab** vCenter |
-| `tests/New-VIFolderScaleSet.ps1` | 0.1.0 | Builds and removes a large folder set (default 5000 folders, 500 permissions) in a **lab** vCenter |
+| `tests/New-VIFolderScaleSet.ps1` | 0.2.0 | Builds, scrambles and removes a large folder set (default 5000 folders, 500 permissions, optional dummy VMs) in a **lab** vCenter |
 
 > **Status: lab-tested.** VIFolderManager has been lab-tested on VCF 9.1.1 and 9.0.2 management vCenters only. It has not yet been used in a production migration. Exporting from a vCenter 8.0 U3 source into 9.1.1 has been lab-tested (folders and permissions, on a vCenter 8 without hosts, so no VM moves); a 7.x source has not. Try it in a lab first, always run an import with `-DryRun` before the real one, and check the log. Use it at your own risk; feedback and issues are welcome.
 
@@ -169,7 +169,7 @@ The report holds the full export, names included. Keep it where you keep the exp
 
 Suggested run: Create, Export, Scramble, Import `-DryRun`, Import, Import again (everything should be "already present"), compare a new export with the first one, Remove.
 
-`tests/New-VIFolderScaleSet.ps1` builds a large set for scale tests: a `VIFM-S` tree in all four folder types (default 5000 folders, up to six levels, names that repeat across branches), 500 folder permissions for `-TestPrincipal` with the built-in ReadOnly role, and with `-WithTargetDatacenter` an empty datacenter `VIFM-S-DC2` to import into. `-Mode Remove` deletes it again. Test cases and measured durations are in `tests/TESTPLAN.md`.
+`tests/New-VIFolderScaleSet.ps1` builds a large set for scale tests: a `VIFM-S` tree in all four folder types (default 5000 folders, up to six levels, names that repeat across branches), 500 folder permissions for `-TestPrincipal` with the built-in ReadOnly role, and with `-WithTargetDatacenter` an empty datacenter `VIFM-S-DC2` to import into. `-VMCount` adds that many dummy VMs (no disk, no NIC, never powered on) spread over the VM tree, and `-Mode Scramble` moves them to the root VM folder, so an import with `-MoveObjects` can be tested at scale. `-Mode Remove` deletes the VMs first, then the trees. Test cases and measured durations are in `tests/TESTPLAN.md`.
 
 Scale (VCF 9.1.1, 2026-11-19, 5000 folders and 500 permissions): export 3 s, import `-DryRun` 6 s, a real import into an empty datacenter 4:46 (5008 folders and 500 permissions, identical to the source).
 

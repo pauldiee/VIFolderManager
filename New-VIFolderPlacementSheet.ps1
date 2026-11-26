@@ -55,16 +55,21 @@
 
 .NOTES
     Script  : New-VIFolderPlacementSheet.ps1
-    Version : 0.1.0
+    Version : 0.1.1
     Author  : Paul van Dieen
     Blog    : https://www.hollebollevsan.nl
     Requires: PowerShell 5.1 or 7.x; no PowerCLI, no vCenter connection
-    Tested  : PowerShell 7.6.10 with a generated list (no live vCenter yet)
+    Tested  : PowerShell 7.6.10; target list from lab B (vCenter 9.0.2), 2026-11-26
     The page holds VM and folder names: keep it where you keep the export.
 #>
 
 <#
 CHANGELOG
+v0.1.1  2026-11-26  Paul van Dieen
+    - Layout in the VIExportViewer house style: sticky header with the tabs,
+      light/dark switch, one folder table with VM chips, paths below the
+      datacenter, expand/collapse all, root VMs as chips (#25).
+
 v0.1.0  2026-11-26  Paul van Dieen
     - First version (#25): search, per folder, per VM, attention list,
       list time, printable.
@@ -83,7 +88,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$scriptVersion = '0.1.0'
+$scriptVersion = '0.1.1'
 $scriptAuthor  = 'Paul van Dieen'
 $scriptBlogUrl = 'https://www.hollebollevsan.nl'
 
@@ -164,77 +169,107 @@ $template = @'
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Destination folders</title>
 <style>
+/* ITQ house style, the same tokens as VIExportViewer 0.2.0 (itq-design
+   skill): Royal Blue text and surfaces, Orange for emphasis and the active
+   tab, Light Blue as the soft secondary. No logos and nothing external: the
+   page works offline, so the font is Titillium when installed, else Calibri. */
 :root {
   --royal: #040559; --orange: #FF4F41; --lightblue: #CDE3F7;
   --bg: #F4F8FD; --panel: #FFFFFF; --text: #040559; --muted: #535353; --line: #E2E8F0;
   --head-bg: #040559; --head-text: #FFFFFF; --head-quiet: #CDE3F7;
-  --accent: #FF4F41; --accent-soft: #FFE3E0; --soft: #E6F1FB; --code: #E6EBEB;
+  --accent: #FF4F41; --accent-soft: #FFE3E0; --soft: #E6F1FB; --group: #CDE3F7; --group-text: #040559; --group-quiet: #33437A;
+  --vmbox: #FFFFFF; --chip: #F4F8FD; --chip-line: #CDE3F7; --dot: #FF4F41; --pill: #040559; --pill-text: #FFFFFF; --code: #FFFFFF;
   --warn: #CC3528; --warn-soft: #FFE3E0;
-  --shadow-sm: 0 2px 6px rgba(4, 5, 90, 0.08);
+  --shadow-sm: 0 2px 6px rgba(4, 5, 90, 0.08); --shadow-md: 0 8px 24px rgba(4, 5, 90, 0.10);
   --focus: 0 0 0 3px rgba(255, 79, 65, 0.35);
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #02032E; --panel: #0B0C4A; --text: #FFFFFF; --muted: #CDE3F7; --line: #2A2B6E;
-    --head-bg: #02032E; --soft: #1A1B5E; --code: #1A1B5E; --accent-soft: #3A1A30;
+    --head-bg: #040559; --soft: #1A1B5E; --group: #22247E; --group-text: #FFFFFF; --group-quiet: #CDE3F7;
+    --vmbox: #0B0C4A; --chip: #02032E; --chip-line: #2F3190; --dot: #FF4F41; --pill: #CDE3F7; --pill-text: #040559; --code: #02032E; --accent-soft: #3A1A30;
     --warn: #FF8A80; --warn-soft: #3A1A30;
   }
 }
+:root[data-theme="dark"] {
+  --bg: #02032E; --panel: #0B0C4A; --text: #FFFFFF; --muted: #CDE3F7; --line: #2A2B6E;
+  --head-bg: #040559; --soft: #1A1B5E; --group: #22247E; --group-text: #FFFFFF; --group-quiet: #CDE3F7;
+  --vmbox: #0B0C4A; --chip: #02032E; --chip-line: #2F3190; --dot: #FF4F41; --pill: #CDE3F7; --pill-text: #040559; --code: #02032E; --accent-soft: #3A1A30;
+  --warn: #FF8A80; --warn-soft: #3A1A30;
+}
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text);
-  font: 15px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif; }
-header { background: var(--head-bg); color: var(--head-text); padding: 18px 28px 14px; }
-header h1 { margin: 0 0 4px; font-size: 22px; font-weight: 600; }
-header .meta { color: var(--head-quiet); font-size: 13px; }
-header .meta b { color: var(--head-text); font-weight: 600; }
-.bar { position: sticky; top: 0; z-index: 2; background: var(--bg); padding: 12px 28px;
-  border-bottom: 1px solid var(--line); display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
-.bar input { flex: 1 1 320px; max-width: 520px; padding: 9px 12px; font: inherit; color: var(--text);
-  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
-.bar input:focus { outline: none; box-shadow: var(--focus); border-color: var(--accent); }
-.tabs { display: flex; gap: 6px; }
-.tabs button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line);
-  background: var(--panel); color: var(--text); cursor: pointer; }
-.tabs button[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
-.tabs button:focus-visible { outline: none; box-shadow: var(--focus); }
-.tabs .count { opacity: .8; font-size: 12px; margin-left: 4px; }
-.stats { color: var(--muted); font-size: 13px; }
-main { padding: 18px 28px 40px; }
-.note { background: var(--soft); border-radius: 8px; padding: 10px 14px; margin: 0 0 16px; font-size: 14px; }
-.folder { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-  box-shadow: var(--shadow-sm); margin: 0 0 10px; }
-.folder > summary { list-style: none; cursor: pointer; padding: 10px 14px; display: flex;
-  gap: 12px; align-items: baseline; flex-wrap: wrap; }
-.folder > summary::-webkit-details-marker { display: none; }
-.folder > summary::before { content: "\25B8"; color: var(--muted); }
-.folder[open] > summary::before { content: "\25BE"; }
-.crumb { font-weight: 600; }
-.crumb .sep { color: var(--muted); font-weight: 400; margin: 0 5px; }
-.crumb .dc { color: var(--muted); font-weight: 400; }
-.badge { background: var(--soft); border-radius: 999px; padding: 1px 9px; font-size: 12px; }
-.id { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; background: var(--code);
-  border-radius: 4px; padding: 1px 6px; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--text); font: 15px/1.5 "Titillium", Calibri, "Segoe UI", sans-serif; }
+header.app { position: sticky; top: 0; z-index: 5; background: var(--head-bg); color: var(--head-text); box-shadow: var(--shadow-md); }
+.headrow, .bar, main, footer { max-width: 1240px; margin-left: auto; margin-right: auto; }
+.headrow { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: space-between; padding: 14px 24px 10px; }
+header.app h1 { font-size: 21px; font-weight: 700; margin: 0; letter-spacing: .2px; }
+header.app .meta { color: var(--head-quiet); font-size: 13px; margin-top: 2px; }
+header.app .meta b { color: var(--head-text); font-weight: 600; }
+.tabs { display: flex; gap: 2px; background: rgba(255, 255, 255, .08); border-radius: 6px; padding: 3px; }
+.tabs button { border: 0; background: transparent; color: var(--head-quiet); border-radius: 4px; padding: 6px 16px; font: inherit; font-weight: 600; cursor: pointer; transition: background .16s cubic-bezier(.4,0,.2,1), color .16s; }
+.tabs button:hover { color: #fff; background: rgba(255, 255, 255, .08); }
+.tabs button[aria-selected="true"] { background: var(--orange); color: #fff; }
+.tabs .count { opacity: .85; font-size: 12px; font-weight: 400; margin-left: 5px; }
+.right { display: flex; gap: 10px; align-items: center; }
+.btn { border: 1px solid rgba(255, 255, 255, .45); background: transparent; color: #fff; border-radius: 6px; padding: 6px 12px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+.btn:hover { background: rgba(255, 255, 255, .1); }
+.btn:focus-visible, .tabs button:focus-visible, input:focus-visible, .grp:focus-visible { outline: none; box-shadow: var(--focus); }
+.bar { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; padding: 0 24px 12px; }
+.bar input { flex: 1 1 320px; max-width: 480px; padding: 8px 12px; font: inherit; color: var(--royal);
+  background: #fff; border: 1px solid transparent; border-radius: 6px; }
+.stats { color: var(--head-quiet); font-size: 13px; }
+.bar .link { background: none; border: 0; color: var(--head-quiet); font: inherit; font-size: 13px; cursor: pointer; text-decoration: underline; padding: 0; }
+.bar .link:hover { color: #fff; }
+main { padding: 20px 24px 40px; }
+.note { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--orange); border-radius: 6px; padding: 10px 14px; margin: 0 0 16px; font-size: 14px; box-shadow: var(--shadow-sm); }
+.sheet { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow-sm); overflow: hidden; }
+.grp { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto auto; gap: 12px; align-items: center;
+  padding: 10px 16px 10px 12px; background: var(--group); color: var(--group-text); border-top: 1px solid var(--line);
+  border-left: 4px solid var(--orange); cursor: pointer; user-select: none; }
+.grp:hover { filter: brightness(1.04); }
+.sheet > .grp:first-child { border-top: 0; }
+.grp .tw { color: var(--group-quiet); font-size: 12px; }
+.grp .crumb .up, .grp .crumb .sep { color: var(--group-quiet); }
+.grp .flags { grid-column: 2 / -1; display: flex; gap: 6px; flex-wrap: wrap; }
+.grp .flags:empty { display: none; }
+.vmbox { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px 14px 46px; background: var(--vmbox); }
+.vmbox[hidden] { display: none; }
+.vm { background: var(--chip); border: 1px solid var(--chip-line); border-radius: 6px; padding: 3px 10px 3px 8px; font-size: 14px; white-space: nowrap; }
+.vm::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--dot); margin-right: 7px; vertical-align: 1px; }
+.vm.dup { background: var(--warn-soft); border-color: var(--warn); color: var(--warn); font-weight: 600; }
+.vm.dup::before { background: var(--warn); }
+.vm.dup::after { content: " \00B7 duplicate name"; font-weight: 400; font-size: 12px; }
+.crumb .up { color: var(--muted); }
+.crumb .sep { color: var(--muted); margin: 0 6px; }
+.crumb .leaf { font-weight: 700; }
+.crumb .root { font-weight: 700; font-style: italic; }
+.count-badge { background: var(--pill); color: var(--pill-text); border-radius: 999px; padding: 1px 10px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.id { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; background: var(--code); color: var(--text);
+  border-radius: 4px; padding: 1px 7px; white-space: nowrap; }
+.id.none { background: var(--warn-soft); color: var(--warn); }
 .flag { background: var(--warn-soft); color: var(--warn); border-radius: 4px; padding: 1px 7px; font-size: 12px; font-weight: 600; }
-.vms { columns: 3 220px; column-gap: 24px; margin: 0; padding: 4px 14px 12px 38px; }
-.vms li { break-inside: avoid; padding: 1px 0; }
+.typ { background: var(--soft); border-radius: 4px; padding: 1px 7px; font-size: 12px; }
 table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line);
-  border-radius: 10px; overflow: hidden; box-shadow: var(--shadow-sm); }
-th, td { text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
-th { background: var(--soft); font-weight: 600; font-size: 13px; }
+  border-radius: 12px; overflow: hidden; box-shadow: var(--shadow-sm); }
+th, td { text-align: left; padding: 8px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { background: var(--group); color: var(--group-text); font-weight: 600; font-size: 13px; }
 tr:last-child td { border-bottom: 0; }
-h2 { font-size: 17px; margin: 22px 0 6px; }
+tr:hover td { background: var(--soft); }
+h2 { font-size: 17px; margin: 26px 0 4px; }
 h2:first-child { margin-top: 0; }
-.explain { color: var(--muted); font-size: 14px; margin: 0 0 10px; }
+.explain { color: var(--muted); font-size: 14px; margin: 0 0 10px; max-width: 900px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; box-shadow: var(--shadow-sm); }
 .empty { color: var(--muted); padding: 18px 0; }
-mark { background: var(--accent-soft); color: inherit; border-radius: 3px; }
-footer { color: var(--muted); font-size: 12px; padding: 0 28px 24px; }
+footer { color: var(--muted); font-size: 12px; padding: 0 24px 24px; }
 [hidden] { display: none !important; }
 @media print {
-  :root { --bg: #fff; --panel: #fff; --text: #040559; --muted: #535353; --line: #CDCDDF; --soft: #F4F8FD; --code: #E6EBEB; }
-  .bar { display: none; }
-  header { background: #fff; color: var(--text); border-bottom: 2px solid var(--royal); }
-  header .meta, header .meta b { color: var(--text); }
-  .folder, table { box-shadow: none; break-inside: avoid; }
+  :root, :root[data-theme="dark"] { --bg: #fff; --panel: #fff; --text: #040559; --muted: #535353; --line: #CDCDDF; --soft: #F4F8FD; --group: #E6F1FB; --group-text: #040559; --group-quiet: #535353; --vmbox: #fff; --chip: #fff; --chip-line: #CDCDDF; --pill: #040559; --pill-text: #fff; --code: #fff; }
+  header.app { position: static; box-shadow: none; background: #fff; color: var(--text); border-bottom: 2px solid var(--royal); }
+  header.app .meta, header.app .meta b { color: var(--text); }
+  .tabs, .bar, .right { display: none; }
+  .vmbox[hidden] { display: flex !important; }
+  .sheet, table, .chips { box-shadow: none; }
   section[hidden] { display: block !important; }
   section { break-before: page; }
   section:first-of-type { break-before: auto; }
@@ -242,19 +277,27 @@ footer { color: var(--muted); font-size: 12px; padding: 0 28px 24px; }
 </style>
 </head>
 <body>
-<header>
-  <h1 id="title"></h1>
-  <div class="meta" id="meta"></div>
-</header>
-<div class="bar">
-  <input id="q" type="search" placeholder="Search VM or folder ..." autocomplete="off" aria-label="Search VM or folder">
-  <div class="tabs" role="tablist">
-    <button role="tab" data-view="folders" aria-selected="true">Per folder<span class="count" id="c-folders"></span></button>
-    <button role="tab" data-view="vms" aria-selected="false">Per VM<span class="count" id="c-vms"></span></button>
-    <button role="tab" data-view="attention" aria-selected="false">Attention<span class="count" id="c-att"></span></button>
+<header class="app">
+  <div class="headrow">
+    <div>
+      <h1 id="title"></h1>
+      <div class="meta" id="meta"></div>
+    </div>
+    <div class="right">
+      <div class="tabs" role="tablist">
+        <button role="tab" data-view="folders" aria-selected="true">Per folder<span class="count" id="c-folders"></span></button>
+        <button role="tab" data-view="vms" aria-selected="false">Per VM<span class="count" id="c-vms"></span></button>
+        <button role="tab" data-view="attention" aria-selected="false">Attention<span class="count" id="c-att"></span></button>
+      </div>
+      <button class="btn" id="theme" type="button" title="Switch light / dark"></button>
+    </div>
   </div>
-  <span class="stats" id="stats"></span>
-</div>
+  <div class="bar">
+    <input id="q" type="search" placeholder="Search VM or folder ..." autocomplete="off" aria-label="Search VM or folder">
+    <span class="stats" id="stats"></span>
+    <button class="link" id="toggle-all" type="button">Collapse all</button>
+  </div>
+</header>
 <main>
   <section id="v-folders"></section>
   <section id="v-vms" hidden></section>
@@ -274,7 +317,7 @@ footer { color: var(--muted); font-size: 12px; padding: 0 28px 24px; }
   document.title = D.title;
   document.getElementById('title').textContent = D.title;
   var meta = document.getElementById('meta');
-  function metaPart(label, value) { if (meta.childNodes.length) meta.appendChild(document.createTextNode('  ·  ')); meta.appendChild(document.createTextNode(label + ' ')); meta.appendChild(el('b', null, value)); }
+  function metaPart(label, value) { if (meta.childNodes.length) meta.appendChild(document.createTextNode('  \u00B7  ')); meta.appendChild(document.createTextNode(label + ' ')); meta.appendChild(el('b', null, value)); }
   if (D.datacenter) metaPart('Target datacenter', D.datacenter);
   metaPart('List written', D.listTime);
   metaPart('Page made', D.made);
@@ -299,14 +342,15 @@ footer { color: var(--muted); font-size: 12px; padding: 0 28px 24px; }
   function dupName(it) { return nameCount[key(it.o + '|' + it.n)] > 1; }
   function isRoot(p) { return segs(p).length === 0; }
 
+  // Path below the datacenter (the datacenter is in the header): parents
+  // muted, the destination folder itself bold.
   function crumb(p) {
     var c = el('span', 'crumb');
-    if (D.datacenter) c.appendChild(el('span', 'dc', D.datacenter));
     var s = segs(p);
-    if (!s.length) { c.appendChild(el('span', 'sep', '\u203A')); c.appendChild(document.createTextNode('(datacenter root)')); return c; }
+    if (!s.length) { c.appendChild(el('span', 'root', '(datacenter root)')); return c; }
     s.forEach(function (part, i) {
-      if (D.datacenter || i > 0) c.appendChild(el('span', 'sep', '\u203A'));
-      c.appendChild(document.createTextNode(part));
+      if (i > 0) c.appendChild(el('span', 'sep', '\u203A'));
+      c.appendChild(el('span', i === s.length - 1 ? 'leaf' : 'up', part));
     });
     return c;
   }
@@ -315,7 +359,7 @@ footer { color: var(--muted); font-size: 12px; padding: 0 28px 24px; }
     if (ambiguousLeaf(f.p)) container.appendChild(el('span', 'flag', 'name in ' + leafPaths[key(leaf(f.p))].length + ' paths'));
     if (it && dupName(it)) container.appendChild(el('span', 'flag', 'duplicate VM name'));
   }
-  function idChip(id) { return el('span', 'id', id || 'no ID'); }
+  function idChip(id) { return el('span', id ? 'id' : 'id none', id || 'no ID'); }
   function typeLabel(it) { return it.o === 'VirtualMachine' ? '' : ' (' + it.o + ')'; }
   function showTypes() { var t = {}; items.forEach(function (it) { t[it.t] = 1; }); return Object.keys(t).length > 1; }
   var multiType = showTypes();
@@ -323,36 +367,59 @@ footer { color: var(--muted); font-size: 12px; padding: 0 28px 24px; }
   var q = document.getElementById('q');
   function matches(text, term) { return !term || key(text).indexOf(term) !== -1; }
 
+  // Collapsed folders survive a re-render (search); large lists start collapsed.
+  var collapsed = {};
+  if (order.length > 30) order.forEach(function (k) { collapsed[k] = true; });
+
   function renderFolders(term) {
     var v = document.getElementById('v-folders'); v.textContent = '';
     var shown = 0;
-    if (!term) v.appendChild(el('p', 'note', 'One mobility group per destination folder keeps it simple; otherwise use the largest folder as the group default and set the rest per VM. The path starts at the target datacenter.'));
+    if (!term) v.appendChild(el('p', 'note', 'One mobility group per destination folder keeps it simple; otherwise use the largest folder as the group default and set the rest per VM. Paths start below the target datacenter.'));
+    var sheet = el('div', 'sheet');
     order.forEach(function (k) {
       var f = folders[k];
       var folderHit = matches(f.p, term);
       var vms = f.vms.filter(function (it) { return folderHit || matches(it.n, term); });
       if (!vms.length) return;
       shown++;
-      var d = el('details', 'folder'); d.open = !!term || order.length <= 30;
-      var s = el('summary');
-      if (multiType) s.appendChild(el('span', 'badge', f.t));
-      s.appendChild(crumb(f.p));
-      s.appendChild(el('span', 'badge', vms.length + (vms.length === 1 ? ' VM' : ' VMs')));
-      s.appendChild(idChip(f.id));
-      flags(s, f, null);
-      d.appendChild(s);
-      var ul = el('ul', 'vms');
-      vms.forEach(function (it) {
-        var li = el('li', null, it.n + typeLabel(it));
-        if (dupName(it)) { li.appendChild(document.createTextNode(' ')); li.appendChild(el('span', 'flag', 'duplicate')); }
-        ul.appendChild(li);
-      });
-      d.appendChild(ul);
-      v.appendChild(d);
+      var open = !!term || !collapsed[k];
+      var g = el('div', 'grp'); g.tabIndex = 0; g.setAttribute('role', 'button'); g.setAttribute('aria-expanded', open ? 'true' : 'false');
+      g.appendChild(el('span', 'tw', open ? '\u25BE' : '\u25B8'));
+      var name = el('span'); if (multiType) { name.appendChild(el('span', 'typ', f.t)); name.appendChild(document.createTextNode(' ')); }
+      name.appendChild(crumb(f.p)); g.appendChild(name);
+      g.appendChild(el('span', 'count-badge', vms.length + (vms.length === 1 ? ' VM' : ' VMs')));
+      g.appendChild(idChip(f.id));
+      var fl = el('span', 'flags'); flags(fl, f, null); g.appendChild(fl);
+      var box = el('div', 'vmbox'); box.hidden = !open;
+      vms.forEach(function (it) { box.appendChild(el('span', dupName(it) ? 'vm dup' : 'vm', it.n + typeLabel(it))); });
+      function toggle() {
+        collapsed[k] = !box.hidden; box.hidden = collapsed[k];
+        g.setAttribute('aria-expanded', box.hidden ? 'false' : 'true');
+        g.firstChild.textContent = box.hidden ? '\u25B8' : '\u25BE';
+        syncToggleAll();
+      }
+      g.addEventListener('click', toggle);
+      g.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+      sheet.appendChild(g); sheet.appendChild(box);
     });
-    if (!shown) v.appendChild(el('p', 'empty', 'Nothing matches "' + q.value + '".'));
+    if (shown) v.appendChild(sheet);
+    else v.appendChild(el('p', 'empty', 'Nothing matches "' + q.value + '".'));
     return shown;
   }
+
+  var toggleAll = document.getElementById('toggle-all');
+  function anyOpen() { return order.some(function (k) { return !collapsed[k]; }); }
+  function syncToggleAll() { toggleAll.textContent = anyOpen() ? 'Collapse all' : 'Expand all'; }
+  toggleAll.addEventListener('click', function () {
+    var close = anyOpen(); order.forEach(function (k) { collapsed[k] = close; }); render();
+  });
+
+  // Theme: follows the system until the button is used
+  var root = document.documentElement, themeBtn = document.getElementById('theme');
+  function isDark() { var t = root.getAttribute('data-theme'); return t ? t === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches; }
+  function syncTheme() { themeBtn.textContent = isDark() ? 'Light' : 'Dark'; }
+  themeBtn.addEventListener('click', function () { root.setAttribute('data-theme', isDark() ? 'light' : 'dark'); syncTheme(); });
+  syncTheme();
 
   function renderVms(term) {
     var v = document.getElementById('v-vms'); v.textContent = '';
@@ -382,6 +449,13 @@ footer { color: var(--muted); font-size: 12px; padding: 0 28px 24px; }
       total += rows.length;
       v.appendChild(el('h2', null, title + ' (' + rows.length + ')'));
       v.appendChild(el('p', 'explain', explain));
+      if (cols === null) {
+        // A list of names only: chips instead of a one-column table
+        var box = el('div', 'chips');
+        rows.forEach(function (r) { box.appendChild(el('span', 'vm', cells(r))); });
+        v.appendChild(box);
+        return;
+      }
       var t = el('table'); var h = el('tr');
       cols.forEach(function (c) { h.appendChild(el('th', null, c)); });
       t.appendChild(h);
@@ -406,7 +480,7 @@ footer { color: var(--muted); font-size: 12px; padding: 0 28px 24px; }
     block('VMs in the datacenter root',
       'These VMs sit directly in the datacenter, not in a folder. In HCX pick the datacenter itself (its root VM folder).',
       items.filter(function (it) { return isRoot(it.p); }),
-      ['VM'], function (it) { return [it.n + typeLabel(it)]; });
+      null, function (it) { return it.n + typeLabel(it); });
     if (!total) v.appendChild(el('p', 'empty', 'Nothing needs attention.'));
     return total;
   }
@@ -419,6 +493,7 @@ footer { color: var(--muted); font-size: 12px; padding: 0 28px 24px; }
     document.getElementById('c-folders').textContent = '(' + f + ')';
     document.getElementById('c-vms').textContent = '(' + n + ')';
     document.getElementById('stats').textContent = items.length + ' objects in ' + order.length + ' folders';
+    syncToggleAll();
   }
   q.addEventListener('input', render);
   var tabs = document.querySelectorAll('.tabs button');
@@ -427,6 +502,7 @@ footer { color: var(--muted); font-size: 12px; padding: 0 28px 24px; }
       var on = x === b; x.setAttribute('aria-selected', on ? 'true' : 'false');
       document.getElementById('v-' + x.getAttribute('data-view')).hidden = !on;
     });
+    toggleAll.hidden = b.getAttribute('data-view') !== 'folders';
   }
   Array.prototype.forEach.call(tabs, function (b) {
     b.addEventListener('click', function () { select(b); });

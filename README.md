@@ -5,6 +5,7 @@ A PowerShell utility to export and import vCenter inventory folder structures (V
 | Script | Version | Purpose |
 |---|---|---|
 | `Invoke-VIFolderManager.ps1` | 1.6.0 | Export / import vCenter folder trees. Lab-tested on VCF 9.1.1 and 9.0.2, and from vCenter 8.0 U3 to 9.1.1 |
+| `New-VIFolderPlacementSheet.ps1` | 0.1.0 | Turns the target placement list into an HTML page for the operator who picks destination folders in HCX (offline, no vCenter) |
 | `tests/New-VIFolderTestSet.ps1` | 1.1.1 | Builds, scrambles and removes a throwaway test set in a **lab** vCenter |
 | `tests/New-VIFolderScaleSet.ps1` | 0.2.0 | Builds, scrambles and removes a large folder set (default 5000 folders, 500 permissions, optional dummy VMs) in a **lab** vCenter |
 
@@ -90,6 +91,25 @@ The import list is the one for an HCX migration: it tells you per VM which folde
 In HCX, pick that folder as the destination folder of the VM in the Mobility Group. With HCX PowerCLI, `New-HCXMigration -Folder` takes an HCX folder container: `Get-HCXContainer -Type Folder -Site <destination>` lists them by name (two folders with the same name are ambiguous), and `Get-HCXContainer -Uid` picks one by its HCX ID. Whether that HCX ID equals the vCenter folder ID in `TargetFolderId` is **not verified** yet; compare them once with `Get-HCXContainer -Type Folder -Site <destination> | Select-Object Name, Uid` before you script on it.
 
 After the wave, the same import with `-MoveObjects` puts any VM that landed elsewhere into its folder.
+
+#### Placement sheet for the HCX operator
+
+When the operator picks the destination folder per VM by hand, a CSV next to the HCX screen is awkward. `New-VIFolderPlacementSheet.ps1` turns the target list into one HTML page (`<list>_sheet.html`, next to the list) that opens offline in any browser:
+
+- **Search** on VM or folder name; it filters every view.
+- **Per folder:** each destination folder as a path from the target datacenter (`DC01 › Prod › Web`), its folder ID on the target, its VM count and its VMs. One mobility group per destination folder keeps the picking simple.
+- **Per VM:** every VM A-Z with its destination folder.
+- **Attention:** folders without an ID on the target (not created yet, or the list came from a dry run), folder names that occur in more than one path, VM names that occur more than once, and VMs in the datacenter root.
+- The time the list was written, so the operator sees how fresh it is. **Print / PDF** works too.
+
+```powershell
+# On the target vCenter, right before the operator starts: create the folders and write the target list
+.\Invoke-VIFolderManager.ps1 -vCenterServer vc02.vcf.lab -Mode Import -FolderType VM -MoveObjects:$false -ApplyPermissions:$false -Csv
+# Turn the newest target list in Backups\ into the page (or pass -Path <list>)
+.\New-VIFolderPlacementSheet.ps1
+```
+
+It shows VM folders only by default; `-FolderType` adds other types. It needs PowerShell 5.1 or 7 and no PowerCLI. The page holds VM and folder names: keep it where you keep the export.
 
 ## Requirements
 

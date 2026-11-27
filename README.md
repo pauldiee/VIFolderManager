@@ -13,6 +13,17 @@ A PowerShell utility to export and import vCenter inventory folder structures (V
 
 ---
 
+## Step-by-step guide
+
+VIFolderManager is step 5 of carrying the vCenter configuration over to a new VCF 9 vCenter in a side-by-side migration, and it comes back in every migration wave. The guide on docs.hollebollevsan.nl walks through it, with the commands and a check per step:
+
+- [Carrying over the vCenter configuration, step 5: folders and permissions](https://docs.hollebollevsan.nl/docs/30-carry-over-vcenter-configuration/#step-5-folders-and-permissions): build the folder trees and folder permissions on the target, without moving objects yet.
+- [Migrating with HCX, 2. Create the Mobility Group](https://docs.hollebollevsan.nl/docs/33-migrating-with-hcx/#2-create-the-mobility-group): the destination folder per VM, and the placement sheet (`New-VIFolderPlacementSheet.ps1`) for the operator.
+- [Migrating without HCX, 3. After](https://docs.hollebollevsan.nl/docs/32-migrating-without-hcx/#3-after): after a wave, an import with `-MoveObjects` puts the migrated VMs in their folders.
+- [Side-by-side migration: build new, then move the workloads](https://docs.hollebollevsan.nl/docs/29-side-by-side-migration/#toolkits): the whole route, and how this toolkit fits with the others.
+
+---
+
 ## How it works
 
 The script connects to a vCenter, then runs one of two modes. Pass `-Mode Export|Import`, or leave it out to pick from a menu. Pass `-FolderType VM,Host,Datastore,Network` (any combination), or leave it out to pick from a menu. Every picker accepts single numbers, comma-separated lists, ranges (`2-6`), combinations (`1,3-5,8`), `all`, and `cancel` (or `exit`, `quit`, `q`). The datacenter picker and the export-file picker also filter by name: a wildcard (`*DC01*`) or `/text` for a substring narrows and renumbers the list, `reset` clears it, `list` shows everything; above 50 items the picker asks for a filter instead of printing the whole list. Every action is logged to the console and a timestamped log file. Long steps show a progress bar with "n of N: item", the percentage and the time left; it disappears when the step ends.

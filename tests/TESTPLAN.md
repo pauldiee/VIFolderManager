@@ -68,6 +68,12 @@ Findings that shaped 1.5.1:
 - Creating folders: a `Get-View` of the parent for every new child doubled
   the calls; parents are now fetched once.
 
+**1.8.0 (W38, #9), 2026-11-27, lab B (vCenter 9.0.2, certificate not trusted by the laptop):** start without `-vCenterServer`, certificate question, error trap. `-Mode Export`; answers from stdin.
+
+| # | Steps | Result |
+|---|---|---|
+| W1 | No `-vCenterServer`; pick the vCenter by number, `y` at the certificate question, `q` at the first picker | **pass**: list `[1] vc-mgmt-a.site-a.vcf.two`, `[2] 192.168.2.65`, `[3] vc-mgmt-a.site-a.vcf.lab`; `1`, certificate warning, `y`, "Certificate check off for this run", connected (9.0.2); `q` at the datacenter and folder-type pickers: "No datacenter or folder type selected. Skipping export.", exit 0. The same answers on 1.7.0 (PR #24, `-SkipCertificateValidation`) end the same way (continuing to the folder-type picker after `q` at the datacenter is older behaviour) |
+
 ## Open points
 
 - Scale not yet run on LB (9.0.2) or L8 (8.0.3): `RetrieveAllPermissions`

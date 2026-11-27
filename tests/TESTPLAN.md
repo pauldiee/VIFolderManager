@@ -47,6 +47,17 @@ that finds everything takes about 4 minutes).
 | S5 | Remove | All `VIFM-S` trees and `VIFM-S-DC2` gone | **pass** |
 | S6 | Create with `-VMCount 200`, Export, Scramble, Import `-MoveObjects -DryRun`, Import `-MoveObjects` | 200 VMs back in their folders; duration and progress noted | not run yet (the set itself: Create with 10 VMs, Scramble and Remove checked on LA, 2026-11-19) |
 
+### C. Placement sheet (New-VIFolderPlacementSheet.ps1)
+
+| # | Lab | Steps | Expected | Result |
+|---|---|---|---|---|
+| P1 | LB | Test set Create, Export `-FolderType VM`, Scramble, Import `-FolderType VM -MoveObjects:$false -ApplyPermissions:$false -Csv`, sheet from the newest target list, Remove | Target list with a folder ID per VM; sheet shows every folder and VM, the duplicate `vifm-dup01` and the root VMs under Attention; works in light and dark, search filters every view | 2026-11-26: **pass**. Import: 4 folders created, 8 already present, 17 objects in 7 folders. Sheet 0.1.1 built on PowerShell 7.6 and 5.1 (no garbled characters), checked in Chrome: Per folder, Per VM with a search, Attention, light and dark |
+
+Not covered: a list with folders without an ID (a dry run), a folder name
+in more than one path (Scramble had left the empty `Web` folders without
+VMs, so they were not in the list), more than 30 folders (starts folded),
+and the HCX folder picker itself (no HCX in the labs).
+
 Findings that shaped 1.5.1:
 
 - One `RetrieveEntityPermissions` call per folder cost about 26 ms; one

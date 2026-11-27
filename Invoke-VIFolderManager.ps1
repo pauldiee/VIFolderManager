@@ -49,7 +49,9 @@
     from (Import mode). Defaults to a "Backups" subfolder next to the script.
     Without this parameter an interactive run asks for the directory after
     the mode: Enter keeps the default, B opens the Windows folder browser,
-    or type a path. Import shows how many exports the folder holds. No
+    or type a path. Import shows how many exports the folder holds; there,
+    F opens the Windows file dialog to pick the export file itself, and a
+    typed path to a .json file is used as the export file. No
     prompt in an unattended run (-Datacenter on Export, -ExportFile on
     Import).
 
@@ -62,7 +64,10 @@
 .PARAMETER ExportFile
     Import mode: the export file to import (a name or wildcard, with or
     without .json) instead of the file picker. When a wildcard matches
-    several files, the newest is used and logged. Together with -Datacenter,
+    several files, the newest is used and logged. A full or relative path
+    to a file (anything with a \ or /) is used as is, wherever the file
+    sits; -BackupDirectory is then not needed. In the interactive file list
+    B opens the Windows file dialog instead. Together with -Datacenter,
     -FolderType, -MoveObjects and -ApplyPermissions (use -MoveObjects:$false
     to say no) an Import runs unattended, without the Proceed question
     (saved credential required); without console input every prompt stops
@@ -139,6 +144,10 @@
     .\Invoke-VIFolderManager.ps1 -vCenterServer vc02.lab.local -Mode Import
 
 .EXAMPLE
+    # Import an export straight from its path (no backup directory, no file list)
+    .\Invoke-VIFolderManager.ps1 -vCenterServer vc02.lab.local -Mode Import -ExportFile 'D:\Migration\Folders_DC01_20261125-0930.json' -DryRun
+
+.EXAMPLE
     # Unattended export of every datacenter whose name starts with DC
     .\Invoke-VIFolderManager.ps1 -vCenterServer vc01.lab.local -Mode Export -Datacenter 'DC*' -FolderType VM,Host,Datastore,Network
 
@@ -157,7 +166,7 @@
 
 .NOTES
     Script   : Invoke-VIFolderManager.ps1
-    Version  : 1.6.0
+    Version  : 1.7.0
     Author   : Paul van Dieen
     Blog     : https://www.hollebollevsan.nl
     Requires : PowerShell 7.4+, VCF.PowerCLI 9.0+ (or VMware.PowerCLI 13+)
@@ -168,6 +177,14 @@
 #>
 
 <# CHANGELOG
+    v1.7.0  2026-11-25  Paul van Dieen
+        - Import: pick the export file directly (#21). At the backup
+          directory question F opens the Windows file dialog, and a typed
+          path to a .json file is used as the export file; in the file list
+          B opens the file dialog. -ExportFile also takes a path to the file
+          (anything with a \ or /), wherever it sits. The log names the full
+          path; -Csv writes the target list next to the chosen file
+
     v1.6.0  2026-11-19  Paul van Dieen
         - -Report: an HTML report next to the export (VI Export Viewer 0.2.0
           with the export embedded, report\viewer.html): overview, compare
@@ -342,7 +359,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$scriptVersion = '1.6.0'
+$scriptVersion = '1.7.0'
 $scriptAuthor  = 'Paul van Dieen'
 $scriptBlogUrl = 'https://www.hollebollevsan.nl'
 $scriptDir     = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
@@ -754,7 +771,10 @@ function Select-SingleItem {
         [Parameter(Mandatory = $true)][array]$Items,
         [Parameter(Mandatory = $true)][string]$DisplayProperty,
         [Parameter(Mandatory = $true)][string]$Title,
-        [switch]$Filter
+        [switch]$Filter,
+        # Extra one-letter commands, e.g. @{ B = 'pick a file in a dialog' };
+        # returns [pscustomobject]@{ Command = 'B' } when one is entered (#21)
+        [hashtable]$Commands = @{}
     )
     if ($Items.Count -eq 0) {
         Write-Host '  No items available to select.' -ForegroundColor Yellow
@@ -770,6 +790,7 @@ function Select-SingleItem {
         Write-Host "  Filter by name: a wildcard (e.g. *DC01*) or /text for a substring; 'reset' clears" -ForegroundColor Gray
         Write-Host "  the filter, 'list' shows every item in the current list." -ForegroundColor Gray
     }
+    foreach ($key in $Commands.Keys) { Write-Host "  $key`: $($Commands[$key])" -ForegroundColor Gray }
     Write-Host ''
     while ($true) {
         $prompt    = if ($flt) { "  Your selection (filter: $flt, $($view.Count) shown)" } else { '  Your selection' }
@@ -778,6 +799,8 @@ function Select-SingleItem {
             Write-Host '  Cancelled.' -ForegroundColor Yellow
             return $null
         }
+        $cmd = @($Commands.Keys | Where-Object { $_ -eq $userInput })
+        if ($cmd.Count -gt 0) { return [pscustomobject]@{ Command = $cmd[0] } }
         if ($Filter -and $userInput -eq 'list') {
             Write-ItemList -Items $view -DisplayProperty $DisplayProperty -Full
             continue
@@ -868,6 +891,29 @@ function Select-FolderDialog {
     }
 }
 
+function Select-FileDialog {
+    # Windows file dialog for one export (.json) (#21)
+    param([string]$Title, [string]$StartPath)
+    $dialog = [System.Windows.Forms.OpenFileDialog]::new()
+    $dialog.Title = $Title
+    $dialog.Filter = 'Folder exports (*.json)|*.json|All files (*.*)|*.*'
+    $dialog.Multiselect = $false
+    $dialog.CheckFileExists = $true
+    if ($StartPath -and (Test-Path -Path $StartPath -PathType Container)) { $dialog.InitialDirectory = (Resolve-Path $StartPath).Path }
+    $owner = [System.Windows.Forms.Form]::new()
+    $owner.TopMost = $true
+    $owner.ShowInTaskbar = $false
+    $owner.WindowState = 'Minimized'
+    try {
+        if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) { return $dialog.FileName }
+        return $null
+    }
+    finally {
+        $dialog.Dispose()
+        $owner.Dispose()
+    }
+}
+
 function Get-BackupCount {
     param([string]$Path)
     return @(Get-ChildItem -Path $Path -Filter '*.json' -File -ErrorAction SilentlyContinue).Count
@@ -876,6 +922,19 @@ function Get-BackupCount {
 $askBackupDir = -not $PSBoundParameters.ContainsKey('BackupDirectory') -and (
     ($Mode -eq 'Export' -and $Datacenter.Count -eq 0) -or
     ($Mode -eq 'Import' -and -not $ExportFile))
+
+# The export file to import when it is chosen directly (#21): a full path in
+# -ExportFile, F (file dialog) or a typed .json path at the backup directory
+# question, or B in the file list. $null means: pick from the backup directory.
+$importFile = $null
+if ($Mode -eq 'Import' -and $ExportFile -and ([System.IO.Path]::IsPathRooted($ExportFile) -or $ExportFile -match '[\\/]')) {
+    if (-not (Test-Path -LiteralPath $ExportFile -PathType Leaf)) {
+        Write-Host "  [ERROR] Export file not found: $ExportFile" -ForegroundColor Red
+        exit 1
+    }
+    $importFile = Get-Item -LiteralPath $ExportFile
+    if (-not $PSBoundParameters.ContainsKey('BackupDirectory')) { $BackupDirectory = $importFile.DirectoryName }
+}
 
 if ($askBackupDir) {
     $canBrowse = Test-FolderDialogAvailable
@@ -886,11 +945,30 @@ if ($askBackupDir) {
         if ($Mode -eq 'Import' -and (Test-Path -Path $BackupDirectory -PathType Container)) {
             Write-Host "    ($(Get-BackupCount $BackupDirectory) export(s) here)" -ForegroundColor DarkGray
         }
-        $hint = if ($canBrowse) { "  [Enter] use it, [B] browse, or type a path ('q' to quit)" } else { "  [Enter] use it, or type a path ('q' to quit)" }
+        $hint = if ($Mode -eq 'Import') {
+            if ($canBrowse) { "  [Enter] use it, [B] browse, [F] pick an export file, or type a folder or .json path ('q' to quit)" }
+            else { "  [Enter] use it, or type a folder or .json path ('q' to quit)" }
+        } elseif ($canBrowse) { "  [Enter] use it, [B] browse, or type a path ('q' to quit)" } else { "  [Enter] use it, or type a path ('q' to quit)" }
         $answer = Read-Input $hint
         if (Test-CancelInput $answer) {
             Write-Host '  Cancelled.' -ForegroundColor Yellow
             exit 0
+        }
+
+        # Import: pick the export file itself (#21)
+        if ($Mode -eq 'Import' -and $canBrowse -and $answer -match '^[Ff]$') {
+            $picked = Select-FileDialog -Title 'Select the folder export (.json) to import' -StartPath $BackupDirectory
+            if (-not $picked) { Write-Host '  No file chosen.' -ForegroundColor Yellow; continue }
+            $importFile = Get-Item -LiteralPath $picked
+            $BackupDirectory = $importFile.DirectoryName
+            Write-Host "  [OK]   Export file: $($importFile.FullName)" -ForegroundColor Green
+            break
+        }
+        if ($Mode -eq 'Import' -and $answer -and (Test-Path -LiteralPath $answer.Trim('"', "'") -PathType Leaf)) {
+            $importFile = Get-Item -LiteralPath $answer.Trim('"', "'")
+            $BackupDirectory = $importFile.DirectoryName
+            Write-Host "  [OK]   Export file: $($importFile.FullName)" -ForegroundColor Green
+            break
         }
 
         $candidate = $BackupDirectory
@@ -1289,14 +1367,18 @@ if ($Mode -eq 'Export') {
 # =============================================================================
 if ($Mode -eq 'Import') {
     Write-Log '--- IMPORT MODE ---'
-    if (-not (Test-Path -Path $BackupDirectory)) {
+    if (-not $importFile -and -not (Test-Path -Path $BackupDirectory)) {
         Write-Log "Backup directory does not exist: $BackupDirectory" -Level ERROR
         Disconnect-VIServer -Server $viConn -Confirm:$false
         exit 1
     }
-    $allJson = @(Get-ChildItem -Path $BackupDirectory -Filter '*.json' -File | Sort-Object Name)
+    $allJson = if ($importFile) { @() } else { @(Get-ChildItem -Path $BackupDirectory -Filter '*.json' -File | Sort-Object Name) }
     $fileChoice = $null
-    if ($ExportFile) {
+    if ($importFile) {
+        # Chosen directly (#21): full path in -ExportFile, F or a .json path at the folder question
+        $fileChoice = $importFile
+    }
+    elseif ($ExportFile) {
         # Unattended: a name or wildcard, with or without .json; the newest match wins
         $pattern = if ($ExportFile -like '*.json') { $ExportFile } else { "$ExportFile.json" }
         $hits = @($allJson | Where-Object { $_.Name -like $pattern } | Sort-Object LastWriteTime -Descending)
@@ -1315,7 +1397,14 @@ if ($Mode -eq 'Import') {
     }
     else {
         $fileItems  = @($allJson | ForEach-Object { [pscustomobject]@{ Label = $_.Name; Name = $_.Name; Item = $_ } })
-        $fileChoice = Select-SingleItem -Items $fileItems -DisplayProperty 'Label' -Title 'Select folder export to IMPORT' -Filter
+        $fileCmds   = if (Test-FolderDialogAvailable) { @{ B = 'pick an export file anywhere in the Windows file dialog' } } else { @{} }
+        while ($true) {
+            $fileChoice = Select-SingleItem -Items $fileItems -DisplayProperty 'Label' -Title 'Select folder export to IMPORT' -Filter -Commands $fileCmds
+            if (-not $fileChoice -or -not ($fileChoice.PSObject.Properties.Name -contains 'Command')) { break }
+            $picked = Select-FileDialog -Title 'Select the folder export (.json) to import' -StartPath $BackupDirectory
+            if ($picked) { $fileChoice = [pscustomobject]@{ Item = (Get-Item -LiteralPath $picked) }; break }
+            Write-Host '  No file chosen.' -ForegroundColor Yellow
+        }
         if ($fileChoice) { $fileChoice = $fileChoice.Item }
     }
 
@@ -1334,7 +1423,7 @@ if ($Mode -eq 'Import') {
     }
 
     if ($data) {
-        Write-Log "Export file: $($fileChoice.Name) (datacenter '$($data.Datacenter)' on $($data.SourceVCenter), exported $($data.ExportedAt))"
+        Write-Log "Export file: $($fileChoice.FullName) (datacenter '$($data.Datacenter)' on $($data.SourceVCenter), exported $($data.ExportedAt))"
 
         # Target datacenter
         $dcViews = @(Get-DatacenterViews)
@@ -1644,7 +1733,7 @@ if ($Mode -eq 'Import') {
 
                 if ($Csv) {
                     $safeTarget = $targetDc.Name -replace '[\\/:*?"<>|]', '_'
-                    $csvPath    = Join-Path $BackupDirectory ("{0}_target-{1}.csv" -f [System.IO.Path]::GetFileNameWithoutExtension($fileChoice.Name), $safeTarget)
+                    $csvPath    = Join-Path $fileChoice.DirectoryName ("{0}_target-{1}.csv" -f [System.IO.Path]::GetFileNameWithoutExtension($fileChoice.Name), $safeTarget)
                     @($placementRows) | Sort-Object FolderType, Path, Name | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
                     Write-Log "Target placement list: $csvPath ($($placementRows.Count) object(s); TargetFolderId is the folder ID on $vCenterServer)" -Level SUCCESS
                     if ($DryRun) { Write-Log 'Dry run: folders that do not exist yet have no TargetFolderId; run the import without -DryRun (with -MoveObjects:$false) to get them.' -Level WARNING }

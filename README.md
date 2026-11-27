@@ -4,7 +4,7 @@ A PowerShell utility to export and import vCenter inventory folder structures (V
 
 | Script | Version | Purpose |
 |---|---|---|
-| `Invoke-VIFolderManager.ps1` | 1.6.0 | Export / import vCenter folder trees. Lab-tested on VCF 9.1.1 and 9.0.2, and from vCenter 8.0 U3 to 9.1.1 |
+| `Invoke-VIFolderManager.ps1` | 1.7.0 | Export / import vCenter folder trees. Lab-tested on VCF 9.1.1 and 9.0.2, and from vCenter 8.0 U3 to 9.1.1 |
 | `New-VIFolderPlacementSheet.ps1` | 0.1.1 | Turns the target placement list into an HTML page for the operator who picks destination folders in HCX (offline, no vCenter). Lab-tested with a target list from VCF 9.0.2 |
 | `tests/New-VIFolderTestSet.ps1` | 1.1.1 | Builds, scrambles and removes a throwaway test set in a **lab** vCenter |
 | `tests/New-VIFolderScaleSet.ps1` | 0.2.0 | Builds, scrambles and removes a large folder set (default 5000 folders, 500 permissions, optional dummy VMs) in a **lab** vCenter |
@@ -28,7 +28,7 @@ VIFolderManager is step 5 of carrying the vCenter configuration over to a new VC
 
 The script connects to a vCenter, then runs one of two modes. Pass `-Mode Export|Import`, or leave it out to pick from a menu. Pass `-FolderType VM,Host,Datastore,Network` (any combination), or leave it out to pick from a menu. Every picker accepts single numbers, comma-separated lists, ranges (`2-6`), combinations (`1,3-5,8`), `all`, and `cancel` (or `exit`, `quit`, `q`). The datacenter picker and the export-file picker also filter by name: a wildcard (`*DC01*`) or `/text` for a substring narrows and renumbers the list, `reset` clears it, `list` shows everything; above 50 items the picker asks for a filter instead of printing the whole list. Every action is logged to the console and a timestamped log file. Long steps show a progress bar with "n of N: item", the percentage and the time left; it disappears when the step ends.
 
-**Backup directory.** Without `-BackupDirectory`, an interactive run asks for it right after the mode: **Enter** keeps the default `Backups\` next to the script, **B** opens the Windows folder browser (only where a GUI is available), or type a path. Import shows how many exports the folder holds and asks again when it holds none. An unattended run (`-Datacenter` on Export, `-ExportFile` on Import) doesn't ask.
+**Backup directory.** Without `-BackupDirectory`, an interactive run asks for it right after the mode: **Enter** keeps the default `Backups\` next to the script, **B** opens the Windows folder browser (only where a GUI is available), or type a path. Import shows how many exports the folder holds and asks again when it holds none; there **F** opens the Windows file dialog to pick the export file itself, and a typed path to a `.json` file is used as the export file. An unattended run (`-Datacenter` on Export, `-ExportFile` on Import) doesn't ask.
 
 **Failures stand out.** A datacenter that fails to export, a folder that can't be created, an object that can't be moved and a permission that can't be set are logged in red as `FAILED …`, with vCenter's own message. Each summary line is red when something failed, yellow when something was only skipped (an ambiguous name, a role missing on the target), green otherwise, and is followed by the list of failures. Objects that are not in the target yet don't colour the line: during a migration that's normal.
 
@@ -70,7 +70,7 @@ Top-level folders that vCenter, the Supervisor or NSX create and manage themselv
 
 ### Import
 
-1. Pick an export file, the target datacenter (the one with the same name is marked) and the folder types (or pass `-ExportFile`, `-Datacenter` and `-FolderType`; when a wildcard in `-ExportFile` matches several files, the newest is used and logged).
+1. Pick an export file (from the list, or **B** for the Windows file dialog, anywhere on disk), the target datacenter (the one with the same name is marked) and the folder types (or pass `-ExportFile`, `-Datacenter` and `-FolderType`; when a wildcard in `-ExportFile` matches several files, the newest is used and logged; a path to the file, such as `D:\migration\Folders_DC01_20261125-0930.json`, is used as is).
 2. Choose whether to **move objects** and whether to **re-apply permissions** (or pass `-MoveObjects` / `-ApplyPermissions`, with `:$false` to skip the question).
 3. Confirm. With `-DryRun` nothing is changed and the log shows what would happen. An import with every choice passed as a parameter (`-ExportFile`, `-Datacenter`, `-FolderType`, `-MoveObjects`, `-ApplyPermissions`) runs without this question.
 
@@ -151,6 +151,9 @@ Setting up PowerShell 7 and VCF.PowerCLI on a jump host, with or without interne
 # Recreate the folders only
 .\Invoke-VIFolderManager.ps1 -vCenterServer vc02.vcf.lab -Mode Import -MoveObjects:$false -ApplyPermissions:$false
 
+# Import an export straight from its path (no backup directory, no file list)
+.\Invoke-VIFolderManager.ps1 -vCenterServer vc02.vcf.lab -Mode Import -ExportFile 'D:\migration\Folders_DC01_20261125-0930.json' -DryRun
+
 # Unattended export of every datacenter whose name starts with DC
 .\Invoke-VIFolderManager.ps1 -vCenterServer vc01.vcf.lab -Mode Export -Datacenter 'DC*' -FolderType VM,Host,Datastore,Network -BackupDirectory D:\migration\folders
 
@@ -177,9 +180,9 @@ From a scheduled task or another script, start it with `pwsh -Command` rather th
 | `-IncludeSystemFolders` | Export: also export the system folders listed above |
 | `-Csv` | Export: placement list with folder and object IDs. Import: target placement list with the folder ID on the target vCenter (see Placement lists) |
 | `-FolderType` | `VM`, `Host`, `Datastore`, `Network` (one or more); menu when omitted |
-| `-BackupDirectory` | Where JSON files are written and read. Default: `Backups\` next to the script. Asked after the mode when omitted (Enter, B for the folder browser, or a path), except in an unattended run |
+| `-BackupDirectory` | Where JSON files are written and read. Default: `Backups\` next to the script. Asked after the mode when omitted (Enter, B for the folder browser, or a path; on Import also F for the file dialog or a path to a `.json` file), except in an unattended run |
 | `-Datacenter` | Export: datacenter names or wildcards instead of the picker. Import: the exact target datacenter. An unknown name stops the script with the list |
-| `-ExportFile` | Import: export file name or wildcard (`.json` optional) instead of the picker; the newest match wins |
+| `-ExportFile` | Import: export file name or wildcard (`.json` optional) instead of the picker; the newest match wins. A path to the file (anything with `\` or `/`) is used as is, wherever it sits |
 | `-LogDirectory` | Default: `Logs\` next to the script |
 | `-MoveObjects` | Import: move same-named objects into their folder; asked when omitted |
 | `-ApplyPermissions` | Import: re-apply folder permissions; asked when omitted |

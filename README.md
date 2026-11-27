@@ -4,7 +4,7 @@ A PowerShell utility to export and import vCenter inventory folder structures (V
 
 | Script | Version | Purpose |
 |---|---|---|
-| `Invoke-VIFolderManager.ps1` | 1.7.0 | Export / import vCenter folder trees. Lab-tested on VCF 9.1.1 and 9.0.2, and from vCenter 8.0 U3 to 9.1.1 |
+| `Invoke-VIFolderManager.ps1` | 1.8.0 | Export / import vCenter folder trees. Lab-tested on VCF 9.1.1 and 9.0.2, and from vCenter 8.0 U3 to 9.1.1 |
 | `tests/New-VIFolderTestSet.ps1` | 1.1.1 | Builds, scrambles and removes a throwaway test set in a **lab** vCenter |
 | `tests/New-VIFolderScaleSet.ps1` | 0.2.0 | Builds, scrambles and removes a large folder set (default 5000 folders, 500 permissions, optional dummy VMs) in a **lab** vCenter |
 
@@ -105,7 +105,10 @@ Setting up PowerShell 7 and VCF.PowerCLI on a jump host, with or without interne
 ## Usage
 
 ```powershell
-# Fully interactive
+# Fully interactive: asks for the vCenter (saved ones as numbers), then the mode
+.\Invoke-VIFolderManager.ps1
+
+# Fully interactive, for one vCenter
 .\Invoke-VIFolderManager.ps1 -vCenterServer vc01.vcf.lab
 
 # Export the VM and Host folder trees
@@ -141,7 +144,7 @@ From a scheduled task or another script, start it with `pwsh -Command` rather th
 
 | Parameter | Description |
 |---|---|
-| `-vCenterServer` | FQDN or IP of the vCenter Server (required) |
+| `-vCenterServer` | FQDN or IP of the vCenter Server. Left out: the script asks for it and lists the vCenters with a saved credential as numbers (1.8.0) |
 | `-Mode` | `Export` or `Import`; menu when omitted |
 | `-IncludeSystemFolders` | Export: also export the system folders listed above |
 | `-Csv` | Export: placement list with folder and object IDs. Import: target placement list with the folder ID on the target vCenter (see Placement lists) |
@@ -156,7 +159,7 @@ From a scheduled task or another script, start it with `pwsh -Command` rather th
 | `-DryRun` | Import: show what would change, change nothing |
 | `-CredentialPath` | Default: `<vCenterServer>.cred` next to the script |
 | `-ResetCredentials` | Prompt for new credentials |
-| `-SkipCertificateValidation` | Accept self-signed certificates (lab use) |
+| `-SkipCertificateValidation` | Accept a certificate this machine does not trust (lab use). Without it the script asks whether to go on without the check for this run; an unattended run stops with exit code 2 (before W38 such a vCenter was connected silently) (1.8.0) |
 
 ## Visual report
 
